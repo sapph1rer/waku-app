@@ -10,6 +10,7 @@ use egui::{
     Color32, CornerRadius, CursorIcon, Frame, Margin, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
+use waku_core::meta::AnimeMeta;
 use waku_core::text::{fmt_num, truncate};
 use waku_core::{AnimeCard, AnimeDetail, Episode, StreamRank};
 
@@ -48,11 +49,22 @@ impl WakuApp {
         let mut act: Option<Act> = None;
 
         let referer = self.referer(&card.source);
-        let art = data
+        let site_art = data
             .as_ref()
             .and_then(|d| d.as_ref().ok())
             .and_then(|d| d.poster.clone())
             .or(card.poster.clone());
+        // AniList data for this series (cover, banner, titles, episode names)
+        let m: Option<AnimeMeta> = self.meta_of(&card.url, &card.title).cloned();
+        let fetching = self.meta_pending.contains(&card.url);
+        let cover = m
+            .as_ref()
+            .and_then(|m| m.cover_url.clone())
+            .or(site_art.clone());
+        let art = m
+            .as_ref()
+            .and_then(|m| m.banner_url.clone())
+            .or(cover.clone());
         let last = data
             .as_ref()
             .and_then(|d| d.as_ref().ok())
@@ -62,6 +74,15 @@ impl WakuApp {
         let w = ui.available_width();
         let (hero, _) = ui.allocate_exact_size(vec2(w, HERO_H), Sense::hover());
         backdrop(ui, &mut self.images, art.as_deref(), &referer, hero);
+        let hero_resp = ui.interact(hero, ui.id().with("hero"), Sense::click());
+        let mut card_act = None;
+        crate::metaui::card_menu(
+            &hero_resp,
+            &card,
+            self.lib.in_list(&card.url),
+            m.is_some(),
+            &mut card_act,
+        );
 
         // back button (top-left over the art)
         let br = Rect::from_min_size(hero.min + vec2(PAD - 6.0, 18.0), vec2(40.0, 40.0));
@@ -93,12 +114,19 @@ impl WakuApp {
             pos2(hero.min.x + PAD, hero.min.y + 84.0),
             vec2(text_w, HERO_H - 100.0),
         )));
-        let title = data
+        let site_title = data
             .as_ref()
             .and_then(|d| d.as_ref().ok())
             .map(|d| d.title.clone())
             .unwrap_or(card.title.clone());
+        let title = self.title_for(m.as_ref(), &site_title);
         widgets::clamp_label(&mut h, &title, bold(38.0), TEXT, 2);
+        if title != site_title {
+            widgets::clamp_label(&mut h, &site_title, regular(14.5), MUTED, 1);
+        }
+        if fetching {
+            widgets::loading(&mut h, tr("Fetching metadata…", "กำลังดึงข้อมูลเรื่อง…"));
+        }
         h.add_space(10.0);
 
         match &data {
@@ -128,15 +156,38 @@ impl WakuApp {
                 h.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     let mut first = true;
-                    for t in d
-                        .tags
-                        .iter()
-                        .filter(|t| ["Sub", "Dub", "Ongoing", "Completed"].contains(&t.as_str()))
-                    {
+                    // with AniList data its status wins over the site's "ongoing/completed" tag
+                    let keep: &[&str] = if m.is_some() {
+                        &["Sub", "Dub"]
+                    } else {
+                        &["Sub", "Dub", "Ongoing", "Completed"]
+                    };
+                    for t in d.tags.iter().filter(|t| keep.contains(&t.as_str())) {
                         badge(ui, &i18n::tag(t), first);
                         first = false;
                     }
-                    badge(ui, tr("Series", "ซีรีส์"), first);
+                    match &m {
+                        Some(m) => {
+                            if let Some(st) = &m.status {
+                                badge(ui, &i18n::status(st), first);
+                                first = false;
+                            }
+                            if let Some(f) = &m.format {
+                                badge(ui, &i18n::format_name(f), first);
+                            }
+                            match (&m.season, m.year) {
+                                (Some(se), Some(y)) => {
+                                    badge(ui, &format!("{} {y}", i18n::season_name(se)), false)
+                                }
+                                (None, Some(y)) => badge(ui, &y.to_string(), false),
+                                _ => {}
+                            }
+                            if let Some(sc) = m.score {
+                                badge(ui, &format!("★ {sc}%"), false);
+                            }
+                        }
+                        None => badge(ui, tr("Series", "ซีรีส์"), first),
+                    }
                     let (s, n) = (seasons.len(), d.episodes.len());
                     let info = if s > 1 {
                         trf!("{s} Seasons · {n} Episodes", "{s} ซีซั่น · {n} ตอน")
@@ -146,10 +197,24 @@ impl WakuApp {
                     badge(ui, &info, false);
                 });
                 h.add_space(12.0);
-                if !d.synopsis.is_empty() {
+                let anilist_desc = m
+                    .as_ref()
+                    .and_then(|m| m.description.clone())
+                    .unwrap_or_default();
+                // Thai UI keeps the site's Thai synopsis; English UI prefers AniList's
+                let synopsis = match (
+                    i18n::is_th(),
+                    d.synopsis.is_empty(),
+                    anilist_desc.is_empty(),
+                ) {
+                    (true, false, _) | (false, false, true) => d.synopsis.clone(),
+                    _ => anilist_desc,
+                };
+                let synopsis = synopsis.replace("\n\n", " ");
+                if !synopsis.is_empty() {
                     widgets::clamp_label(
                         &mut h,
-                        &d.synopsis,
+                        &synopsis,
                         regular(15.0),
                         Color32::from_gray(222),
                         3,
@@ -169,15 +234,47 @@ impl WakuApp {
                             .size(13.5)
                             .color(Color32::from_gray(200)),
                     );
-                    for g in d
-                        .tags
-                        .iter()
-                        .filter(|t| !["Sub", "Dub", "Ongoing", "Completed"].contains(&t.as_str()))
-                    {
+                    let genres: Vec<String> = match &m {
+                        Some(m) if !m.genres.is_empty() => m.genres.clone(),
+                        _ => d
+                            .tags
+                            .iter()
+                            .filter(|t| {
+                                !["Sub", "Dub", "Ongoing", "Completed"].contains(&t.as_str())
+                            })
+                            .cloned()
+                            .collect(),
+                    };
+                    for g in genres {
                         ui.label(RichText::new("·").color(DIM));
                         ui.label(RichText::new(g).size(13.5).color(MUTED));
                     }
+                    if let Some(st) = m.as_ref().and_then(|m| m.studio.clone()) {
+                        ui.label(RichText::new("·").color(DIM));
+                        ui.label(RichText::new(st).size(13.5).color(MUTED));
+                    }
                 });
+                // next episode countdown (AniList schedule)
+                if let Some((ep, at)) = m
+                    .as_ref()
+                    .filter(|m| m.status.as_deref() == Some("RELEASING"))
+                    .and_then(|m| m.next_airing)
+                {
+                    let now = waku_core::store::now();
+                    if at > now {
+                        let eta = i18n::fmt_eta(at as i64 - now as i64);
+                        h.add_space(6.0);
+                        h.label(
+                            RichText::new(format!(
+                                "{}  {}",
+                                icon::CALENDAR_DOTS,
+                                trf!("Episode {ep} airs in {eta}", "ตอนที่ {ep} จะออกในอีก {eta}")
+                            ))
+                            .size(13.5)
+                            .color(ACCENT_HI),
+                        );
+                    }
+                }
                 h.add_space(18.0);
 
                 // primary actions
@@ -236,6 +333,17 @@ impl WakuApp {
                     if widgets::secondary_button(ui, &label).clicked() {
                         act = Some(Act::ToggleList);
                     }
+                    let r = widgets::secondary_button(
+                        ui,
+                        &format!("{}  {}", icon::MAGNIFYING_GLASS, tr("Identify", "ระบุเรื่อง")),
+                    )
+                    .on_hover_text(tr(
+                        "Wrong anime? Pick the right one (also on right-click)",
+                        "ข้อมูลไม่ตรง? เลือกเรื่องที่ถูกต้อง (คลิกขวาก็ได้)",
+                    ));
+                    if r.clicked() {
+                        card_act = Some(crate::metaui::CardAct::Identify(card.clone()));
+                    }
                 });
             }
         }
@@ -266,14 +374,15 @@ impl WakuApp {
                         Tab::Episodes => self.episodes_tab(
                             ui,
                             d,
+                            m.as_ref(),
                             &referer,
-                            art.as_deref(),
+                            cover.as_deref(),
                             sel_season,
                             newest_first,
                             last.as_ref().map(|h| h.ep_num),
                             &mut act,
                         ),
-                        Tab::Details => self.details_tab(ui, d),
+                        Tab::Details => self.details_tab(ui, d, m.as_ref(), &card, &mut card_act),
                         Tab::Sources => self.sources_tab(ui, &mut act),
                         Tab::More => self.more_tab(ui, d, &mut act),
                     }
@@ -281,6 +390,16 @@ impl WakuApp {
         }
 
         // ---------------------------------------------------------- actions
+        if let Some(a) = card_act {
+            let local_eps = data
+                .as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .map_or(0, |d| d.episodes.len() as u32);
+            match a {
+                crate::metaui::CardAct::Identify(c) => self.open_identify(&c, local_eps),
+                other => self.apply_card_act(other),
+            }
+        }
         match act {
             Some(Act::Play(e)) => {
                 if let Some(Ok(d)) = &data {
@@ -333,6 +452,7 @@ impl WakuApp {
         &mut self,
         ui: &mut Ui,
         d: &AnimeDetail,
+        m: Option<&AnimeMeta>,
         referer: &str,
         art: Option<&str>,
         sel: Option<u32>,
@@ -444,30 +564,45 @@ impl WakuApp {
                     eps.reverse();
                 }
                 ui.spacing_mut().item_spacing.y = 10.0;
+                // AniList numbers episodes per entry: only the first season of a page maps 1:1
+                let use_meta = seasons.first().is_some_and(|f| f.0 == season);
                 for e in eps {
                     let seen = watched.is_some_and(|n| e.num <= n + 0.001);
                     let is_last = watched.is_some_and(|n| (e.num - n).abs() < 0.001);
                     let n = fmt_num(e.num);
-                    let name = i18n::ep_name(e);
+                    let em = m
+                        .filter(|_| use_meta && e.num.fract() == 0.0)
+                        .and_then(|m| m.ep(e.num as u32));
+                    let name = em
+                        .map(|x| x.title.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| i18n::ep_name(e));
                     let title = format!("{n}. {name}");
-                    let meta = if is_last {
-                        trf!(
-                            "{sub} · {src_name} · last watched",
-                            "{sub} · {src_name} · ดูล่าสุด"
-                        )
+                    let mut parts = vec![sub.clone(), src_name.clone()];
+                    if let Some(len) = em.and_then(|x| x.length).or(m.and_then(|m| m.duration)) {
+                        parts.push(trf!("{len}m", "{len} นาที"));
+                    }
+                    if let Some(a) = em.and_then(|x| x.aired.clone()) {
+                        parts.push(a);
+                    }
+                    if is_last {
+                        parts.push(tr("last watched", "ดูล่าสุด").into());
                     } else if seen {
-                        trf!("{sub} · {src_name} · watched", "{sub} · {src_name} · ดูแล้ว")
-                    } else {
-                        format!("{sub} · {src_name}")
-                    };
+                        parts.push(tr("watched", "ดูแล้ว").into());
+                    }
+                    let meta_line = parts.join(" · ");
+                    // the site's own label when it differs from the official title (e.g. a Thai name)
+                    let desc = String::new();
                     let c = EpCard {
                         title: &title,
-                        meta: &meta,
-                        desc: "",
+                        meta: &meta_line,
+                        desc: &desc,
                         progress: seen.then_some(1.0),
                         selected: is_last,
                     };
-                    let (play, srv) = episode_card(ui, &mut self.images, art, referer, &c, &e.url);
+                    let thumb = em.and_then(|x| x.thumbnail.as_deref()).or(art);
+                    let (play, srv) =
+                        episode_card(ui, &mut self.images, thumb, referer, &c, &e.url);
                     if play {
                         *act = Some(Act::Play(e.clone()));
                     }
@@ -479,13 +614,82 @@ impl WakuApp {
         });
     }
 
-    fn details_tab(&mut self, ui: &mut Ui, d: &AnimeDetail) {
+    fn details_tab(
+        &mut self,
+        ui: &mut Ui,
+        d: &AnimeDetail,
+        m: Option<&AnimeMeta>,
+        card: &AnimeCard,
+        card_act: &mut Option<crate::metaui::CardAct>,
+    ) {
         if !d.synopsis.is_empty() {
             ui.label(RichText::new(tr("Synopsis", "เรื่องย่อ")).font(bold(17.0)));
             ui.add_space(4.0);
             ui.label(RichText::new(&d.synopsis).color(Color32::from_gray(215)));
             ui.add_space(16.0);
         }
+        if let Some(desc) = m
+            .and_then(|m| m.description.as_ref())
+            .filter(|x| **x != d.synopsis)
+        {
+            ui.label(RichText::new("AniList").font(bold(17.0)));
+            ui.add_space(4.0);
+            ui.label(RichText::new(desc).color(Color32::from_gray(215)));
+            ui.add_space(16.0);
+        }
+
+        // metadata match (Jellyfin-style identify)
+        Frame::new().fill(BAR).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Metadata", "ข้อมูลเรื่อง")).font(bold(16.0)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if m.is_some() && widgets::ghost_button(ui, &format!("{}  {}", icon::X_CIRCLE, tr("Clear", "ล้าง"))).clicked() {
+                        *card_act = Some(crate::metaui::CardAct::Clear(card.clone()));
+                    }
+                    if widgets::ghost_button(ui, &format!("{}  {}", icon::ARROWS_CLOCKWISE, tr("Refresh", "รีเฟรช"))).clicked() {
+                        *card_act = Some(crate::metaui::CardAct::Refresh(card.clone()));
+                    }
+                    if widgets::outline_button(ui, &format!("{}  {}", icon::MAGNIFYING_GLASS, tr("Identify…", "ระบุเรื่องใหม่…"))).clicked() {
+                        *card_act = Some(crate::metaui::CardAct::Identify(card.clone()));
+                    }
+                });
+            });
+            match m {
+                None => {
+                    ui.label(RichText::new(tr("Not identified — titles, covers and episode names come from the site only.", "ยังไม่ได้ระบุเรื่อง — ชื่อ ปก และชื่อตอนมาจากเว็บอย่างเดียว")).color(MUTED));
+                }
+                Some(m) => {
+                    egui::Grid::new("meta_grid").num_columns(2).spacing([30.0, 8.0]).show(ui, |ui| {
+                        let row = |ui: &mut Ui, k: &str, v: String| {
+                            if !v.is_empty() {
+                                ui.label(RichText::new(k).color(MUTED));
+                                ui.label(v);
+                                ui.end_row();
+                            }
+                        };
+                        row(ui, tr("English", "ชื่ออังกฤษ"), m.title_english.clone().unwrap_or_default());
+                        row(ui, tr("Romaji", "โรมาจิ"), m.title_romaji.clone().unwrap_or_default());
+                        row(ui, tr("Native", "ชื่อญี่ปุ่น"), m.title_native.clone().unwrap_or_default());
+                        row(ui, tr("Info", "ข้อมูล"), i18n::meta_line(m));
+                        row(ui, tr("Studio", "สตูดิโอ"), m.studio.clone().unwrap_or_default());
+                        row(ui, tr("Matched", "จับคู่โดย"), if m.manual { tr("you (Identify)", "คุณ (ระบุเอง)") } else { tr("automatic", "อัตโนมัติ") }.into());
+                        let n_titles = m.eps.iter().filter(|e| !e.title.is_empty()).count();
+                        let n_thumbs = m.eps.iter().filter(|e| e.thumbnail.is_some()).count();
+                        row(ui, tr("Episode data", "ข้อมูลตอน"), trf!("{n_titles} titles · {n_thumbs} pictures", "ชื่อตอน {n_titles} · ภาพ {n_thumbs}"));
+                        if let Some(id) = m.anilist_id {
+                            ui.label(RichText::new("AniList").color(MUTED));
+                            ui.hyperlink_to(format!("anilist.co/anime/{id}"), format!("https://anilist.co/anime/{id}"));
+                            ui.end_row();
+                        }
+                    });
+                    for n in &m.notes {
+                        ui.label(RichText::new(format!("{}  {n}", icon::WARNING)).size(12.0).color(DIM));
+                    }
+                }
+            }
+        });
+        ui.add_space(14.0);
         egui::Grid::new("details_grid")
             .num_columns(2)
             .spacing([30.0, 10.0])
@@ -599,12 +803,15 @@ impl WakuApp {
             widgets::loading(ui, tr("Loading…", "กำลังโหลด…"));
             return;
         }
+        let mut card_act = None;
         widgets::card_grid(ui, &cards, |ui, c| {
-            let referer = self.referer(&c.source);
-            if widgets::anime_card(ui, &mut self.images, c, &referer, "").clicked() {
-                *act = Some(Act::Open(c.clone()));
-            }
+            self.draw_card(ui, c, "", &mut card_act);
         });
+        match card_act {
+            Some(crate::metaui::CardAct::Open(c)) => *act = Some(Act::Open(c)),
+            Some(a) => self.apply_card_act(a),
+            None => {}
+        }
     }
 
     pub fn server_modal(&mut self, ctx: &egui::Context) {

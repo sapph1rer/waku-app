@@ -47,6 +47,12 @@ pub struct Settings {
     pub ui_scale: f32,
     /// UI language: "en" (default) or "th".
     pub language: String,
+    /// Which title to show when metadata is known: "english" (default) | "romaji" | "site".
+    pub title_lang: String,
+    /// Look titles up on AniList / Kitsu / Jikan (covers, banners, episode titles).
+    pub fetch_meta: bool,
+    /// Show 18+ titles in On Air.
+    pub show_adult: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +65,9 @@ impl Default for Settings {
             source_order: Vec::new(),
             ui_scale: 1.0,
             language: "en".into(),
+            title_lang: "english".into(),
+            fetch_meta: true,
+            show_adult: false,
         }
     }
 }

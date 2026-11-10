@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use waku_core::manager::{Alternative, DiagStep, Health};
+use waku_core::meta::anilist::SchedItem;
+use waku_core::meta::{AnimeMeta, MetaStore};
 use waku_core::player::{self, PlayOutcome};
 use waku_core::store::{Library, Settings};
 use waku_core::stream::pick_variant;
@@ -52,6 +54,22 @@ pub enum Msg {
         steps: Vec<DiagStep>,
     },
     PlayerCheck(bool),
+    /// metadata for a series page (`enriched` = with episode titles)
+    Meta {
+        url: String,
+        title: String,
+        res: Result<AnimeMeta, String>,
+    },
+    /// AniList candidates for the Identify dialog
+    IdentifyRes {
+        seq: u64,
+        res: Result<Vec<AnimeMeta>, String>,
+    },
+    /// one week of the airing schedule (key = local Monday 00:00)
+    Schedule {
+        week: u64,
+        res: Result<Vec<SchedItem>, String>,
+    },
 }
 
 pub enum PlayEvt {
@@ -75,6 +93,7 @@ pub enum Page {
     Detail,
     MyList,
     History,
+    OnAir,
     Settings,
 }
 
@@ -133,7 +152,7 @@ pub struct WakuApp {
     pub mgr: Arc<SourceManager>,
     pub settings: Settings,
     pub lib: Library,
-    tx: Sender<Msg>,
+    pub tx: Sender<Msg>,
     rx: Receiver<Msg>,
     pub images: Images,
 
@@ -158,6 +177,21 @@ pub struct WakuApp {
     pub diag: HashMap<String, Option<Vec<DiagStep>>>,
     pub player_ok: Option<bool>,
     pub toast: Option<(String, f64)>,
+
+    // metadata (AniList / Kitsu / Jikan)
+    pub meta: MetaStore,
+    /// series URLs with a lookup in flight
+    pub meta_pending: std::collections::HashSet<String>,
+    /// background queue for listing cards (identify only, one request at a time)
+    pub meta_queue: Sender<(String, String)>,
+    pub identify: Option<crate::metaui::IdentifyState>,
+    pub identify_seq: u64,
+
+    // on air
+    pub sched: HashMap<u64, Option<Result<Vec<SchedItem>, String>>>,
+    pub sched_day: u64,
+    pub sched_filter: u8,
+    pub sched_mine: bool,
 }
 
 impl WakuApp {
@@ -169,6 +203,7 @@ impl WakuApp {
             .set_zoom_factor(settings.ui_scale.clamp(0.7, 2.0));
         let mgr = Arc::new(SourceManager::load());
         let (tx, rx) = channel();
+        let tx_meta = tx.clone();
         let images = Images::new(&cc.egui_ctx, mgr.http().clone());
         let home_source = if mgr.get(&settings.home_source).is_some() {
             settings.home_source.clone()
@@ -204,6 +239,15 @@ impl WakuApp {
             diag: HashMap::new(),
             player_ok: None,
             toast: None,
+            meta: MetaStore::load(),
+            meta_pending: Default::default(),
+            meta_queue: crate::metaui::start_meta_worker(&cc.egui_ctx, tx_meta),
+            identify: None,
+            identify_seq: 0,
+            sched: HashMap::new(),
+            sched_day: crate::onair::day_start(waku_core::store::now()),
+            sched_filter: 0,
+            sched_mine: false,
         };
         for e in app.mgr.load_errors.clone() {
             app.notify(e);
@@ -642,7 +686,11 @@ impl WakuApp {
                         {
                             d.card.poster = data.poster.clone();
                         }
+                        let found = res.as_ref().ok().cloned();
                         d.data = Some(res);
+                        if let Some(data) = found {
+                            self.ensure_meta_detail(&data);
+                        }
                     }
                 }
                 Msg::Alts { url, res } => {
@@ -664,6 +712,17 @@ impl WakuApp {
                     self.diag.insert(source, Some(steps));
                 }
                 Msg::PlayerCheck(ok) => self.player_ok = Some(ok),
+                Msg::Meta { url, title, res } => self.on_meta(url, title, res),
+                Msg::IdentifyRes { seq, res } => {
+                    if let Some(st) = &mut self.identify
+                        && self.identify_seq == seq
+                    {
+                        st.results = Some(res);
+                    }
+                }
+                Msg::Schedule { week, res } => {
+                    self.sched.insert(week, Some(res));
+                }
             }
         }
     }
@@ -726,6 +785,7 @@ impl WakuApp {
                     icon::CLOCK_COUNTER_CLOCKWISE,
                     tr("History", "ประวัติ"),
                 ),
+                (Page::OnAir, icon::CALENDAR_DOTS, tr("On Air", "ตารางฉาย")),
             ];
             for (p, g, label) in items {
                 let active = self.page == p;
@@ -959,12 +1019,14 @@ impl eframe::App for WakuApp {
                             Page::Detail => self.detail_page(ui),
                             Page::MyList => self.my_list_page(ui),
                             Page::History => self.history_page(ui),
+                            Page::OnAir => self.onair_page(ui),
                             Page::Settings => self.settings_page(ui),
                         });
                     });
             });
 
         self.server_modal(&ctx);
+        self.identify_modal(&ctx);
         self.toast(&ctx);
 
         if ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1)) {

@@ -11,6 +11,8 @@ mod app;
 mod detail;
 mod i18n;
 mod images;
+mod metaui;
+mod onair;
 mod pages;
 mod theme;
 mod widgets;

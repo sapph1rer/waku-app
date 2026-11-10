@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = "0.4"
 eframe = "0.36"
 egui = "0.36"
 egui-phosphor = "0.14"

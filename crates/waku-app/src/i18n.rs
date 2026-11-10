@@ -127,3 +127,151 @@ pub fn ago(when: u64) -> String {
         _ => trf!("{day} d ago", "{day} วันที่แล้ว"),
     }
 }
+
+// ------------------------------------------------------------------ metadata wording
+
+pub fn status(s: &str) -> String {
+    let th = is_th();
+    match s {
+        "RELEASING" => if th {
+            "กำลังฉาย"
+        } else {
+            "Airing"
+        }
+        .into(),
+        "FINISHED" => if th { "จบแล้ว" } else { "Finished" }.into(),
+        "NOT_YET_RELEASED" => if th {
+            "ยังไม่ฉาย"
+        } else {
+            "Upcoming"
+        }
+        .into(),
+        "CANCELLED" => if th {
+            "ยกเลิก"
+        } else {
+            "Cancelled"
+        }
+        .into(),
+        "HIATUS" => if th { "พักฉาย" } else { "Hiatus" }.into(),
+        o => o.to_string(),
+    }
+}
+
+pub fn season_name(s: &str) -> String {
+    let th = is_th();
+    match s {
+        "WINTER" => if th {
+            "ฤดูหนาว"
+        } else {
+            "Winter"
+        }
+        .into(),
+        "SPRING" => if th {
+            "ฤดูใบไม้ผลิ"
+        } else {
+            "Spring"
+        }
+        .into(),
+        "SUMMER" => if th {
+            "ฤดูร้อน"
+        } else {
+            "Summer"
+        }
+        .into(),
+        "FALL" => if th {
+            "ฤดูใบไม้ร่วง"
+        } else {
+            "Fall"
+        }
+        .into(),
+        o => o.to_string(),
+    }
+}
+
+pub fn format_name(f: &str) -> String {
+    match f {
+        "TV_SHORT" => "TV Short".into(),
+        "MOVIE" => tr("Movie", "มูฟวี่").into(),
+        "SPECIAL" => tr("Special", "ตอนพิเศษ").into(),
+        "MUSIC" => tr("Music", "เพลง").into(),
+        o => o.to_string(),
+    }
+}
+
+/// "TV · Fall 2023 · 28 episodes · Finished"
+pub fn meta_line(m: &waku_core::meta::AnimeMeta) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(f) = &m.format {
+        parts.push(format_name(f));
+    }
+    match (&m.season, m.year) {
+        (Some(s), Some(y)) => parts.push(format!("{} {y}", season_name(s))),
+        (None, Some(y)) => parts.push(y.to_string()),
+        _ => {}
+    }
+    if let Some(n) = m.episodes {
+        parts.push(trf!("{n} episodes", "{n} ตอน"));
+    }
+    if let Some(s) = &m.status {
+        parts.push(status(s));
+    }
+    parts.join(" · ")
+}
+
+/// "2d 4h" / "5h 12m" / "35m" / "now"
+pub fn fmt_eta(secs: i64) -> String {
+    let th = is_th();
+    if secs <= 60 {
+        return tr("now", "ตอนนี้").into();
+    }
+    let (d, h, m) = (secs / 86400, (secs / 3600) % 24, (secs / 60) % 60);
+    let (dd, hh, mm, sp) = if th {
+        ("วัน", "ชม.", "นาที", " ")
+    } else {
+        ("d", "h", "m", "")
+    };
+    if d > 0 {
+        format!("{d}{sp}{dd} {h}{sp}{hh}")
+    } else if h > 0 {
+        format!("{h}{sp}{hh} {m}{sp}{mm}")
+    } else {
+        format!("{m}{sp}{mm}")
+    }
+}
+
+/// Mon = 0 … Sun = 6
+pub fn weekday_short(i: u32) -> &'static str {
+    const EN: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const TH: [&str; 7] = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."];
+    if is_th() {
+        TH[i as usize % 7]
+    } else {
+        EN[i as usize % 7]
+    }
+}
+
+pub fn weekday_long(i: u32) -> &'static str {
+    const EN: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    const TH: [&str; 7] = [
+        "วันจันทร์",
+        "วันอังคาร",
+        "วันพุธ",
+        "วันพฤหัสบดี",
+        "วันศุกร์",
+        "วันเสาร์",
+        "วันอาทิตย์",
+    ];
+    if is_th() {
+        TH[i as usize % 7]
+    } else {
+        EN[i as usize % 7]
+    }
+}

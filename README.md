@@ -9,6 +9,9 @@
 
 - **Home** — hero แนะนำ (หมุนอัตโนมัติ), แถว Continue Watching, แถว "New on <แหล่ง>" ของทุกแหล่ง
 - **Browse** — grid ของแต่ละแหล่ง สลับด้วย chip ที่มีจุดสถานะ เขียว/เหลือง/แดง + โหลดเพิ่ม
+- **ข้อมูลเรื่องจาก AniList / Kitsu / Jikan** (พอร์ตจาก AnimeShelf): ปก, banner, เรื่องย่อ, แนวเรื่อง, สตูดิโอ, คะแนน, ชื่อตอน, ภาพตอน, วันฉาย, ความยาว และนับถอยหลังตอนถัดไป — จับคู่อัตโนมัติจากชื่อบนเว็บ (ตัดภาษาไทย/คำต่อท้ายออก + ใช้ slug ใน URL) แคชไว้ใน `meta.json`
+- **Identify แบบ Jellyfin** — คลิกขวาที่การ์ดหรือ hero → Identify… / Refresh metadata / Clear identification; หน้าต่าง Identify ค้น AniList ได้เอง หรือวาง AniList ID / ลิงก์ — match ที่เลือกเองจะไม่ถูกทับ และใช้กับเรื่องเดียวกันบนแหล่งอื่นด้วย
+- **On Air** — ตารางฉายรายสัปดาห์จาก AniList ตามเวลาเครื่อง (จ.–อา.), สถานะกำลังฉาย / อีกกี่ชม. / ฉายแล้ว, เส้น "Now", ตัวกรอง + "เรื่องของฉัน"; กด Find เพื่อเปิดเรื่องที่จับคู่ไว้แล้ว หรือค้นจากทุกแหล่ง
 - **ค้นหาทุกแหล่งพร้อมกัน** — ผลขึ้นทีละแหล่งตามที่ตอบกลับ, fuzzy search จาก Waku-cli (`re zero` / `rezero` / ชื่อไทย) + index จาก sitemap
 - **หน้าเรื่อง** — poster, เรื่องย่อ, แท็ก, รายการตอน (แยกซีซั่น, เรียงกลับได้), ปุ่ม "ดูต่อ: ตอนที่ N", รายการของฉัน
 - **แหล่งอื่น** — หาเรื่องเดียวกันจากแหล่งอื่น พร้อม % ความเหมือนของชื่อ (เช็กเลขซีซั่นด้วย กันจับผิดภาค)
@@ -80,17 +83,28 @@ crates/waku-core   ไลบรารี (ไม่มี GUI) — ใช้ท�
   manager.rs       SourceManager: health, search_all, alternatives, match_episode, streams, diagnose
   player.rs        เรียก mpv/vlc (+ yt-dlp hook), ตรวจ exit code 2 เพื่อ failover
   store.rs         settings.json / library.json (รายการของฉัน, ประวัติ)
+  meta/            AniList (search / by id / schedule), Kitsu, Jikan, การจับคู่ชื่อ, MetaStore (meta.json)
 crates/waku-app    GUI egui 0.36
   app.rs           state, background jobs (thread + channel), ลำดับการเล่น + failover
   i18n.rs          tr("English", "ไทย") / trf!(…) — เพิ่มภาษาใหม่ = เพิ่ม variant + argument
   pages.rs         Home / Browse / Search / My List / History / Settings
   detail.rs        หน้าเรื่อง: hero, แท็บ, คอลัมน์ซีซั่น, การ์ดตอน, ตัวเลือกเซิร์ฟเวอร์
+  metaui.rs        ใช้ metadata กับการ์ด/หน้าเรื่อง, เมนูคลิกขวา, หน้าต่าง Identify, คิวดึงข้อมูลเบื้องหลัง
+  onair.rs         แท็บ On Air
   widgets.rs       backdrop + gradient, การ์ด poster/ตอน, แท็บ, sidebar, ปุ่ม
   theme.rs         สี, ฟอนต์ไทย/ญี่ปุ่น, icon
 ```
 
 ถ้าเว็บไหนไม่ใช่ WordPress (เช่นเป็น SPA ที่โหลดข้อมูลผ่าน JSON API) ให้เขียน struct ใหม่ที่ `impl Source`
 แล้วเพิ่มใน `SourceManager::from_profiles` (มีคอมเมนต์จุดที่ต้องใส่ไว้แล้ว) — UI และ failover ใช้ได้ทันที
+
+## Metadata — หมายเหตุ
+
+- AniList จำกัด ~90 request/นาที: การ์ดในหน้าแรกถูกจับคู่ทีละเรื่องในคิวเบื้องหลัง ส่วนหน้าเรื่องที่เปิดอยู่ใช้ thread แยกจึงไม่ต้องรอคิว
+- เรื่องที่ชื่อบนเว็บเป็นภาษาไทยล้วนและ URL ไม่มี slug โรมาจิ จะจับคู่อัตโนมัติไม่ได้ → ใช้ Identify
+- ชื่อตอนใช้กับ **ซีซั่นแรกของหน้านั้น** เท่านั้น (AniList แยก entry ต่อซีซั่น) — หน้าที่รวมหลายซีซั่นให้ Identify เป็นภาคที่ต้องการ
+- ทดสอบกับเซิร์ฟเวอร์จำลองได้ด้วย `WAKU_ANILIST`, `WAKU_KITSU`, `WAKU_JIKAN`
+- ไม่ได้พอร์ต AniDB เพราะต้องลงทะเบียน client name ก่อน
 
 ## ข้อจำกัดที่รู้อยู่
 

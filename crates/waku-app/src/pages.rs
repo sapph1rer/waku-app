@@ -4,7 +4,7 @@ use crate::app::{Page, WakuApp};
 use crate::i18n::{self, Lang, tr};
 use crate::theme::*;
 use crate::trf;
-use crate::widgets::{self, anime_card, backdrop, card_grid, card_row, chip, section_title};
+use crate::widgets::{self, backdrop, card_grid, card_row, chip, section_title};
 use egui::{CornerRadius, Frame, Margin, RichText, Sense, Stroke, Ui, pos2, vec2};
 use egui_phosphor::regular as icon;
 use waku_core::AnimeCard;
@@ -49,13 +49,10 @@ impl WakuApp {
             } else {
                 String::new()
             };
-            let referer = self.referer(&c.source);
-            if anime_card(ui, &mut self.images, c, &referer, &sub).clicked() {
-                open = Some(c.clone());
-            }
+            self.draw_card(ui, c, &sub, &mut open);
         });
-        if let Some(c) = open {
-            self.open(&c);
+        if let Some(a) = open {
+            self.apply_card_act(a);
         }
     }
 
@@ -67,13 +64,10 @@ impl WakuApp {
             } else {
                 c.badge.clone().unwrap_or_default()
             };
-            let referer = self.referer(&c.source);
-            if anime_card(ui, &mut self.images, c, &referer, &sub).clicked() {
-                open = Some(c.clone());
-            }
+            self.draw_card(ui, c, &sub, &mut open);
         });
-        if let Some(c) = open {
-            self.open(&c);
+        if let Some(a) = open {
+            self.apply_card_act(a);
         }
     }
 
@@ -130,12 +124,18 @@ impl WakuApp {
                 .request_repaint_after(std::time::Duration::from_secs(1));
             let f = featured[idx].clone();
             let referer = self.referer(&f.source);
-            backdrop(ui, &mut self.images, f.poster.as_deref(), &referer, rect);
+            let view = self.card_view(&f);
+            let fm = self.meta_of(&f.url, &f.title).cloned();
+            let art = fm
+                .as_ref()
+                .and_then(|m| m.banner_url.clone())
+                .or(view.poster.clone());
+            backdrop(ui, &mut self.images, art.as_deref(), &referer, rect);
             let inner = rect.shrink2(vec2(PAD as f32, 0.0));
             let mut act_open = false;
             let mut act_list = false;
             let mut hero = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
-                pos2(inner.min.x, inner.min.y + 150.0),
+                pos2(inner.min.x, inner.min.y + 104.0),
                 pos2(inner.min.x + (w * 0.5).max(420.0), inner.max.y),
             )));
             let sn = self.source_name(&f.source).to_uppercase();
@@ -146,11 +146,32 @@ impl WakuApp {
                     .strong(),
             );
             hero.add_space(4.0);
-            widgets::clamp_label(&mut hero, &f.title, bold(36.0), TEXT, 2);
+            widgets::clamp_label(&mut hero, &view.title, bold(36.0), TEXT, 2);
             hero.add_space(8.0);
-            if let Some(b) = &f.badge {
-                hero.horizontal(|ui| widgets::badge(ui, b, true));
-                hero.add_space(8.0);
+            hero.horizontal(|ui| {
+                if let Some(b) = &f.badge {
+                    widgets::badge(ui, b, true);
+                }
+                if let Some(m) = &fm {
+                    let line = i18n::meta_line(m);
+                    if !line.is_empty() {
+                        widgets::badge(ui, &line, f.badge.is_none());
+                    }
+                    if let Some(sc) = m.score {
+                        widgets::badge(ui, &format!("★ {sc}%"), false);
+                    }
+                }
+            });
+            hero.add_space(8.0);
+            if let Some(desc) = fm.as_ref().and_then(|m| m.description.clone()) {
+                widgets::clamp_label(
+                    &mut hero,
+                    &desc.replace("\n\n", " "),
+                    regular(15.0),
+                    egui::Color32::from_gray(220),
+                    2,
+                );
+                hero.add_space(6.0);
             }
             hero.add_space(10.0);
             hero.horizontal(|ui| {
@@ -173,7 +194,7 @@ impl WakuApp {
                 }
             });
             // carousel dots
-            let dots_y = rect.max.y - 26.0;
+            let dots_y = rect.max.y - 16.0;
             for i in 0..featured.len() {
                 let c = pos2(inner.min.x + 8.0 + i as f32 * 22.0, dots_y);
                 let r =
@@ -211,13 +232,10 @@ impl WakuApp {
                             i18n::ep_name_num(h.ep_num, &h.ep_label),
                             self.source_name(&h.card.source)
                         );
-                        let referer = self.referer(&h.card.source);
-                        if anime_card(ui, &mut self.images, &h.card, &referer, &sub).clicked() {
-                            open = Some(h.card.clone());
-                        }
+                        self.draw_card(ui, &h.card, &sub, &mut open);
                     });
-                    if let Some(c) = open {
-                        self.open(&c);
+                    if let Some(a) = open {
+                        self.apply_card_act(a);
                     }
                     ui.add_space(18.0);
                 }
@@ -485,13 +503,10 @@ impl WakuApp {
                 i18n::ep_name_num(h.ep_num, &h.ep_label),
                 i18n::ago(h.when)
             );
-            let referer = self.referer(&h.card.source);
-            if anime_card(ui, &mut self.images, &h.card, &referer, &sub).clicked() {
-                open = Some(h.card.clone());
-            }
+            self.draw_card(ui, &h.card, &sub, &mut open);
         });
-        if let Some(c) = open {
-            self.open(&c);
+        if let Some(a) = open {
+            self.apply_card_act(a);
         }
     }
 
@@ -522,6 +537,37 @@ impl WakuApp {
                         });
                     if pick != cur {
                         self.set_language(pick);
+                    }
+                    ui.end_row();
+
+                    ui.label(tr("Titles", "ชื่อเรื่อง"));
+                    let cur = self.settings.title_lang.clone();
+                    let name = |k: &str| match k {
+                        "romaji" => tr("Romaji (AniList)", "โรมาจิ (AniList)"),
+                        "site" => tr("As on the site", "ตามเว็บ"),
+                        _ => tr("English (AniList)", "อังกฤษ (AniList)"),
+                    };
+                    egui::ComboBox::from_id_salt("title_lang").selected_text(name(&cur)).show_ui(ui, |ui| {
+                        for k in ["english", "romaji", "site"] {
+                            if ui.selectable_value(&mut self.settings.title_lang, k.to_string(), name(k)).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(tr("Metadata", "ข้อมูลเรื่อง"));
+                    if ui
+                        .checkbox(&mut self.settings.fetch_meta, tr("Fetch covers, banners, synopses and episode titles (AniList · Kitsu · Jikan)", "ดึงปก ภาพพื้นหลัง เรื่องย่อ และชื่อตอน (AniList · Kitsu · Jikan)"))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.end_row();
+
+                    ui.label(tr("On Air", "ตารางฉาย"));
+                    if ui.checkbox(&mut self.settings.show_adult, tr("Show 18+ titles", "แสดงเรื่อง 18+")).changed() {
+                        changed = true;
                     }
                     ui.end_row();
 

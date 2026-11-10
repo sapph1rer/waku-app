@@ -88,6 +88,54 @@ impl Http {
         self.get(url, None)?;
         Ok(t.elapsed().as_millis())
     }
+
+    /// JSON API GET (metadata providers). 429 is retried after the server's Retry-After.
+    pub fn get_json(&self, url: &str, headers: &[(&str, &str)]) -> Result<serde_json::Value> {
+        self.json_call(url, |c| {
+            let mut r = c.get(url);
+            for (k, v) in headers {
+                r = r.header(*k, *v);
+            }
+            r
+        })
+    }
+
+    /// JSON API POST (AniList GraphQL).
+    pub fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.json_call(url, |c| {
+            c.post(url).header("Accept", "application/json").json(body)
+        })
+    }
+
+    fn json_call(
+        &self,
+        url: &str,
+        build: impl Fn(&Client) -> reqwest::blocking::RequestBuilder,
+    ) -> Result<serde_json::Value> {
+        for attempt in 0..3u64 {
+            let resp = build(&self.c)
+                .send()
+                .with_context(|| format!("request {url}"))?;
+            let st = resp.status();
+            if st.as_u16() == 429 {
+                let wait = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(4 + attempt * 4)
+                    .min(30);
+                std::thread::sleep(Duration::from_secs(wait));
+                continue;
+            }
+            let text = resp.text()?;
+            if !st.is_success() && !text.trim_start().starts_with('{') {
+                bail!("{url} -> HTTP {st}");
+            }
+            return serde_json::from_str(&text).with_context(|| format!("{url}: bad JSON"));
+        }
+        bail!("{url}: rate limited (HTTP 429)")
+    }
 }
 
 /// Run `f` over `items` on up to `width` threads at a time (order preserved).

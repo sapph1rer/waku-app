@@ -2,6 +2,7 @@
 
 pub mod http;
 pub mod manager;
+pub mod meta;
 pub mod model;
 pub mod player;
 pub mod profile;
