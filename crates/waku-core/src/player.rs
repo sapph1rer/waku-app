@@ -77,9 +77,21 @@ fn hide_console(c: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_: &mut Command) {}
 
-/// Play one variant of a stream, trying the Referer candidates in turn.
-/// Blocks until the player exits.
-pub fn play(player_cmd: &str, stream: &Stream, v: &Variant, title: &str) -> Result<PlayOutcome> {
+/// One way to open a stream in the built-in player (rmp): the link plus the HTTP context it needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub url: String,
+    pub referrer: String,
+    pub user_agent: String,
+    /// HLS playlist served with a misleading extension (`.txt`)
+    pub force_hls: bool,
+    /// the link is a media file / playlist (false = a host page that needs yt-dlp)
+    pub direct: bool,
+    pub title: String,
+}
+
+/// Referer values to try for a stream, best first (the embedding page's origin works for most hosts).
+pub fn referers(stream: &Stream, v: &Variant) -> Vec<String> {
     let mut refs: Vec<String> = vec![origin_of(&stream.page)];
     if stream.direct() {
         for extra in [origin_of(&v.url), stream.page.clone()] {
@@ -88,6 +100,29 @@ pub fn play(player_cmd: &str, stream: &Stream, v: &Variant, title: &str) -> Resu
             }
         }
     }
+    refs
+}
+
+/// Everything the built-in player should try for one variant, in order.
+pub fn candidates(stream: &Stream, v: &Variant, title: &str) -> Vec<Candidate> {
+    let force_hls = v.url.to_lowercase().split('?').next().unwrap_or("").ends_with(".txt");
+    referers(stream, v)
+        .into_iter()
+        .map(|rf| Candidate {
+            url: v.url.clone(),
+            referrer: rf,
+            user_agent: UA.to_string(),
+            force_hls,
+            direct: stream.direct(),
+            title: title.to_string(),
+        })
+        .collect()
+}
+
+/// Play one variant of a stream, trying the Referer candidates in turn.
+/// Blocks until the player exits.
+pub fn play(player_cmd: &str, stream: &Stream, v: &Variant, title: &str) -> Result<PlayOutcome> {
+    let refs = referers(stream, v);
     for rf in &refs {
         if launch(player_cmd, &v.url, rf, title, stream.direct())? == PlayOutcome::Played {
             return Ok(PlayOutcome::Played);

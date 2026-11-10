@@ -14,6 +14,7 @@ mod images;
 mod metaui;
 mod onair;
 mod pages;
+mod playerview;
 mod theme;
 mod widgets;
 
@@ -84,6 +85,8 @@ fn main() -> eframe::Result {
     }
 
     let options = eframe::NativeOptions {
+        // glow (OpenGL): the built-in player draws libmpv's picture through it
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_title("Waku")
             .with_inner_size([1360.0, 860.0])

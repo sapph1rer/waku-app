@@ -70,6 +70,13 @@ pub enum Msg {
         week: u64,
         res: Result<Vec<SchedItem>, String>,
     },
+    /// built-in player: the resolver found a link to try; answer through `reply`
+    Candidate {
+        seq: u64,
+        ep_url: String,
+        cand: player::Candidate,
+        reply: Sender<crate::playerview::Verdict>,
+    },
 }
 
 pub enum PlayEvt {
@@ -192,11 +199,15 @@ pub struct WakuApp {
     pub sched_day: u64,
     pub sched_filter: u8,
     pub sched_mine: bool,
+
+    // built-in player (rmp)
+    pub view: Option<crate::playerview::ViewState>,
 }
 
 impl WakuApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup(&cc.egui_ctx);
+        rmp_egui::install(cc.get_proc_address.clone());
         let settings = Settings::load();
         i18n::set(Lang::from_code(&settings.language));
         cc.egui_ctx
@@ -248,6 +259,7 @@ impl WakuApp {
             sched_day: crate::onair::day_start(waku_core::store::now()),
             sched_filter: 0,
             sched_mine: false,
+            view: None,
         };
         for e in app.mgr.load_errors.clone() {
             app.notify(e);
@@ -479,12 +491,22 @@ impl WakuApp {
     /// first), then — with auto failover — the same episode on other sources.
     /// `forced` = play exactly this stream.
     pub fn play(&mut self, detail: &AnimeDetail, ep: &Episode, forced: Option<Stream>) {
-        if self.play.as_ref().is_some_and(|p| p.running) {
+        if self.settings.player != "external" {
+            self.play_builtin(detail, ep, forced);
+            return;
+        }
+        self.start_play(detail, ep, forced, false);
+    }
+
+    /// The resolver: find streams (current source, then other sources) and hand them to the player
+    /// one by one until one opens. `builtin` = the rmp view inside the window, else the external player.
+    pub fn start_play(&mut self, detail: &AnimeDetail, ep: &Episode, forced: Option<Stream>, builtin: bool) -> u64 {
+        if !builtin && self.play.as_ref().is_some_and(|p| p.running) {
             self.notify(tr(
                 "Another episode is opening — close the player first",
                 "กำลังเปิดตอนอื่นอยู่ — ปิด player ก่อน",
             ));
-            return;
+            return 0;
         }
         self.play_seq += 1;
         let seq = self.play_seq;
@@ -510,13 +532,32 @@ impl WakuApp {
                 let _ = tx.send(Msg::Play { seq, evt });
                 ctx.request_repaint();
             };
+            let view_ep_url = ep.url.clone();
+            // hand one stream to the player; Err = stop everything (player missing / closed)
+            let attempt = |d: &AnimeDetail, e: &Episode, st: &Stream, v: &waku_core::Variant| -> Result<PlayOutcome, String> {
+                let t = format!("{} — {}", d.title, i18n::ep_name(e));
+                if !builtin {
+                    return player::play(&s.player_cmd, st, v, &t).map_err(|e| format!("{e:#}"));
+                }
+                for cand in player::candidates(st, v, &t) {
+                    let (rtx, rrx) = channel();
+                    if tx.send(Msg::Candidate { seq, ep_url: view_ep_url.clone(), cand, reply: rtx }).is_err() {
+                        return Err(crate::playerview::CLOSED.into());
+                    }
+                    ctx.request_repaint();
+                    match rrx.recv() {
+                        Ok(crate::playerview::Verdict::Opened) => return Ok(PlayOutcome::Played),
+                        Ok(crate::playerview::Verdict::Failed) => continue,
+                        Ok(crate::playerview::Verdict::Closed) | Err(_) => return Err(crate::playerview::CLOSED.into()),
+                    }
+                }
+                Ok(PlayOutcome::LoadFailed)
+            };
             let sname = |id: &str| {
                 mgr.get(id)
                     .map(|x| x.name().to_string())
                     .unwrap_or_else(|| id.into())
             };
-            let title =
-                |d: &AnimeDetail, e: &Episode| format!("{} — {}", d.title, i18n::ep_name(e));
 
             // Ok(true) played, Ok(false) try elsewhere, Err stop (player missing …)
             let try_streams =
@@ -538,7 +579,7 @@ impl WakuApp {
                             ep: e.clone(),
                             line,
                         });
-                        match player::play(&s.player_cmd, &st, &v, &title(d, e)) {
+                        match attempt(d, e, &st, &v) {
                             Ok(PlayOutcome::Played) => return Ok(true),
                             Ok(PlayOutcome::LoadFailed) => {
                                 let sv = &st.server;
@@ -631,6 +672,7 @@ impl WakuApp {
                 Err(e) => send(PlayEvt::Failed(e)),
             }
         });
+        seq
     }
 
     pub fn next_episode(&self) -> Option<(AnimeDetail, Episode)> {
@@ -720,6 +762,7 @@ impl WakuApp {
                         st.results = Some(res);
                     }
                 }
+                Msg::Candidate { seq, ep_url, cand, reply } => self.on_candidate(seq, ep_url, cand, reply),
                 Msg::Schedule { week, res } => {
                     self.sched.insert(week, Some(res));
                 }
@@ -728,6 +771,7 @@ impl WakuApp {
     }
 
     fn on_play(&mut self, seq: u64, evt: PlayEvt) {
+        let mut failed: Option<String> = None;
         let Some(p) = &mut self.play else { return };
         if p.seq != seq {
             return;
@@ -745,14 +789,29 @@ impl WakuApp {
                 p.lines
                     .push(tr("✓ Player closed", "✓ ปิด player แล้ว").into());
             }
+            PlayEvt::Failed(e) if e == crate::playerview::CLOSED => {
+                p.running = false;
+                p.ok = Some(true);
+                p.lines.push(tr("✓ Player closed", "✓ ปิด player แล้ว").into());
+            }
             PlayEvt::Failed(e) => {
                 p.running = false;
                 p.ok = Some(false);
                 p.lines.push(format!("✗ {e}"));
+                failed = Some(e);
             }
         }
         if p.lines.len() > 60 {
             p.lines.drain(..20);
+        }
+        let last = p.lines.last().cloned();
+        if let Some(v) = self.view.as_mut() {
+            if v.seq == seq {
+                v.view.set_status(last);
+            }
+        }
+        if let Some(e) = failed {
+            self.view_resolver_failed(seq, &e);
         }
     }
 
@@ -955,6 +1014,15 @@ impl eframe::App for WakuApp {
         let ctx = ui.ctx().clone();
         self.images.pump(&ctx);
         self.drain();
+
+        // the built-in player takes the whole window while it is open
+        if self.view.is_some() {
+            egui::CentralPanel::default()
+                .frame(Frame::new().fill(Color32::BLACK))
+                .show(ui, |ui| self.player_screen(ui));
+            self.toast(&ctx);
+            return;
+        }
 
         egui::Panel::left("nav")
             .exact_size(84.0)

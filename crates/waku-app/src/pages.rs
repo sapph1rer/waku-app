@@ -593,7 +593,85 @@ impl WakuApp {
             ui.label(RichText::new(tr("Playback", "การเล่น")).font(bold(18.0)));
             ui.add_space(6.0);
             egui::Grid::new("play_settings").num_columns(2).spacing([28.0, 12.0]).show(ui, |ui| {
-                ui.label(tr("Player", "Player"));
+                ui.label(tr("Play in", "เล่นด้วย"));
+                ui.horizontal(|ui| {
+                    for (k, en, th) in [("builtin", "Built-in player (rmp)", "ตัวเล่นในแอป (rmp)"), ("external", "External player", "โปรแกรมภายนอก")] {
+                        if ui.selectable_label(self.settings.player == k, tr(en, th)).clicked() {
+                            self.settings.player = k.to_string();
+                            changed = true;
+                        }
+                    }
+                });
+                ui.end_row();
+
+                if self.settings.player != "external" {
+                    ui.label(tr("Engine", "เอนจิน"));
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            for (k, en, th) in [("auto", "Automatic", "อัตโนมัติ"), ("mpv", "libmpv", "libmpv"), ("native", "Windows (Media Foundation)", "Windows (Media Foundation)")] {
+                                if ui.selectable_label(self.settings.engine == k, tr(en, th)).clicked() {
+                                    self.settings.engine = k.to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
+                        let (txt, col) = match rmp_egui::engine_problem() {
+                            None => (tr("libmpv found: GPU decoding, all codecs, styled Thai subtitles, 7.1 / passthrough audio", "พบ libmpv: ถอดรหัสด้วย GPU, รองรับทุก codec, ซับไทยแบบมีสไตล์, เสียง 7.1 / passthrough").to_string(), GOOD),
+                            Some(why) => (format!("{} — {}", tr("libmpv not found: put libmpv-2.dll next to Waku.exe", "ไม่พบ libmpv: วาง libmpv-2.dll ไว้ข้าง Waku.exe"), first_line_short(&why)), BAD),
+                        };
+                        ui.label(RichText::new(txt).size(12.5).color(col));
+                    });
+                    ui.end_row();
+
+                    ui.label(tr("Hardware decoding", "ถอดรหัสด้วยฮาร์ดแวร์"));
+                    egui::ComboBox::from_id_salt("hwdec").selected_text(self.settings.hwdec.clone()).show_ui(ui, |ui| {
+                        for k in ["auto-safe", "auto", "d3d11va", "d3d11va-copy", "nvdec", "dxva2-copy", "no"] {
+                            if ui.selectable_value(&mut self.settings.hwdec, k.to_string(), k).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(tr("Audio output", "เสียงออก"));
+                    ui.vertical(|ui| {
+                        let mut stereo = self.settings.audio_channels == "stereo";
+                        if ui.checkbox(&mut stereo, tr("Mix surround (5.1 / 7.1) down to stereo — for headphones / TV speakers", "รวมเสียงรอบทิศ (5.1 / 7.1) เป็นสเตอริโอ — สำหรับหูฟัง / ลำโพงทีวี")).changed() {
+                            self.settings.audio_channels = if stereo { "stereo".into() } else { "auto".into() };
+                            changed = true;
+                        }
+                        let mut pt = !self.settings.audio_passthrough.is_empty();
+                        if ui.checkbox(&mut pt, tr("Send Dolby / DTS / TrueHD untouched to an AV receiver (passthrough)", "ส่ง Dolby / DTS / TrueHD ไปที่ AV receiver โดยตรง (passthrough)")).changed() {
+                            self.settings.audio_passthrough = if pt { "ac3,eac3,dts-hd,truehd".into() } else { String::new() };
+                            changed = true;
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(tr("Languages", "ภาษา"));
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(tr("Audio", "เสียง")).color(MUTED));
+                            if ui.add(egui::TextEdit::singleline(&mut self.settings.audio_langs).desired_width(220.0).background_color(PANEL).hint_text("Japanese, Thai")).lost_focus() {
+                                changed = true;
+                            }
+                            ui.label(RichText::new(tr("Subtitles", "ซับ")).color(MUTED));
+                            if ui.add(egui::TextEdit::singleline(&mut self.settings.sub_langs).desired_width(220.0).background_color(PANEL).hint_text("Thai, English  /  off")).lost_focus() {
+                                changed = true;
+                            }
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.label(tr("Episodes", "ตอน"));
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut self.settings.autoplay_next, tr("Play the next episode automatically", "เล่นตอนถัดไปอัตโนมัติ")).changed();
+                        changed |= ui.checkbox(&mut self.settings.resume, tr("Resume where I stopped", "เล่นต่อจากที่ดูค้างไว้")).changed();
+                    });
+                    ui.end_row();
+                }
+
+                ui.label(tr("External player", "โปรแกรมภายนอก"));
                 ui.horizontal(|ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut self.settings.player_cmd).desired_width(320.0).background_color(PANEL).hint_text("mpv  /  C:\\mpv\\mpv.exe"));
                     if r.lost_focus() {
@@ -780,4 +858,8 @@ pub fn open_path(p: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(p).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+}
+
+fn first_line_short(s: &str) -> String {
+    truncate(s.lines().next().unwrap_or(s), 90)
 }
