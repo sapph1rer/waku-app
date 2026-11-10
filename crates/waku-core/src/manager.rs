@@ -226,16 +226,18 @@ impl SourceManager {
         match self.http.ping(&format!("{}/", s.base())) {
             Ok(ms) => push(
                 true,
-                "เชื่อมต่อ",
-                format!("{} ตอบใน {ms} ms", s.base()),
+                "connect",
+                format!("{} answered in {ms} ms", s.base()),
                 vec![],
             ),
             Err(e) => {
                 push(
                     false,
-                    "เชื่อมต่อ",
+                    "connect",
                     format!("{e:#}"),
-                    vec!["เว็บล่ม / เปลี่ยนโดเมน / ติด Cloudflare — แก้ base ใน sources.toml".into()],
+                    vec![
+                        "site down / moved domain / Cloudflare — check base in sources.toml".into(),
+                    ],
                 );
                 return steps;
             }
@@ -249,9 +251,9 @@ impl SourceManager {
                     .collect();
                 push(
                     !c.is_empty(),
-                    "หน้าล่าสุด",
+                    "latest",
                     format!(
-                        "พบ {} เรื่อง (มี poster {})",
+                        "{} titles ({} with poster)",
                         c.len(),
                         c.iter().filter(|x| x.poster.is_some()).count()
                     ),
@@ -262,9 +264,9 @@ impl SourceManager {
             Err(e) => {
                 push(
                     false,
-                    "หน้าล่าสุด",
+                    "latest",
                     format!("{e:#}"),
-                    vec!["ลองตั้ง card_selector / series_path ใน sources.toml".into()],
+                    vec!["try card_selector / series_path in sources.toml".into()],
                 );
                 return steps;
             }
@@ -283,9 +285,9 @@ impl SourceManager {
                 let poster = if d.poster.is_some() { "✓" } else { "✗" };
                 push(
                     !d.episodes.is_empty(),
-                    "หน้าเรื่อง",
+                    "detail",
                     format!(
-                        "\"{}\" — {} ตอน, poster {poster}",
+                        "\"{}\" — {} episodes, poster {poster}",
                         truncate(&d.title, 40),
                         d.episodes.len()
                     ),
@@ -294,15 +296,15 @@ impl SourceManager {
                 d
             }
             Err(e) => {
-                push(false, "หน้าเรื่อง", format!("{e:#}"), vec![]);
+                push(false, "detail", format!("{e:#}"), vec![]);
                 return steps;
             }
         };
         let Some(ep) = detail.episodes.first() else {
             push(
                 false,
-                "ตอน",
-                "ไม่พบลิงก์ตอน — ตั้ง episode_path ใน sources.toml".into(),
+                "episodes",
+                "no episode links — set episode_path in sources.toml".into(),
                 vec![],
             );
             return steps;

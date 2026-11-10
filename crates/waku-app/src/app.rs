@@ -1,7 +1,10 @@
-//! App state, background jobs and the frame loop.
+//! App state, background jobs, playback with failover, and the frame layout
+//! (left icon sidebar + content + now-playing bar).
 
+use crate::i18n::{self, Lang, tr};
 use crate::images::Images;
 use crate::theme::*;
+use crate::trf;
 use crate::widgets;
 use egui::{Color32, CornerRadius, Frame, Margin, RichText, Ui, vec2};
 use egui_phosphor::regular as icon;
@@ -68,6 +71,7 @@ pub enum PlayEvt {
 pub enum Page {
     Home,
     Search,
+    Browse,
     Detail,
     MyList,
     History,
@@ -89,13 +93,21 @@ pub enum Alts {
     Done(Vec<Alternative>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Episodes,
+    Details,
+    Sources,
+    More,
+}
+
 pub struct DetailState {
     pub card: AnimeCard,
     pub data: Option<Result<AnimeDetail, String>>,
     pub alts: Alts,
+    pub tab: Tab,
     pub season: Option<u32>,
     pub newest_first: bool,
-    pub more: bool,
 }
 
 pub struct PlayState {
@@ -134,6 +146,7 @@ pub struct WakuApp {
     pub listings: HashMap<String, Listing>,
 
     pub search_box: String,
+    pub search_focus: bool,
     pub search_q: String,
     pub search_seq: u64,
     pub search: Vec<(String, Option<Result<Vec<AnimeCard>, String>>)>,
@@ -151,6 +164,7 @@ impl WakuApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup(&cc.egui_ctx);
         let settings = Settings::load();
+        i18n::set(Lang::from_code(&settings.language));
         cc.egui_ctx
             .set_zoom_factor(settings.ui_scale.clamp(0.7, 2.0));
         let mgr = Arc::new(SourceManager::load());
@@ -179,6 +193,7 @@ impl WakuApp {
             home_source,
             listings: HashMap::new(),
             search_box: String::new(),
+            search_focus: false,
             search_q: String::new(),
             search_seq: 0,
             search: Vec::new(),
@@ -236,6 +251,12 @@ impl WakuApp {
         }
     }
 
+    pub fn set_language(&mut self, l: Lang) {
+        i18n::set(l);
+        self.settings.language = l.code().into();
+        self.settings.save();
+    }
+
     pub fn refresh_health(&mut self) {
         self.health_loading = true;
         self.spawn(|m| Msg::Health(m.health()));
@@ -264,10 +285,8 @@ impl WakuApp {
             self.notify(e);
         }
         self.refresh_health();
-        self.notify(format!(
-            "โหลดแหล่งใหม่แล้ว ({} แหล่ง)",
-            self.mgr.sources().len()
-        ));
+        let n = self.mgr.sources().len();
+        self.notify(trf!("Sources reloaded ({n})", "โหลดแหล่งใหม่แล้ว ({n} แหล่ง)"));
     }
 
     pub fn ensure_latest(&mut self, source: &str) {
@@ -341,21 +360,25 @@ impl WakuApp {
             card: card.clone(),
             data: None,
             alts: Alts::Idle,
+            tab: Tab::Episodes,
             season: None,
             newest_first: false,
-            more: false,
         });
         let (src, url) = (card.source.clone(), card.url.clone());
         self.spawn(move |m| Msg::Detail {
             url: url.clone(),
             res: m.detail(&src, &url).map_err(|e| format!("{e:#}")),
         });
+        self.ensure_latest(&card.source); // for "More like this"
         self.go(Page::Detail);
     }
 
     pub fn find_alts(&mut self) {
         let Some(d) = &mut self.detail else { return };
         let Some(Ok(data)) = &d.data else { return };
+        if !matches!(d.alts, Alts::Idle) {
+            return;
+        }
         d.alts = Alts::Loading;
         let (title, src, url) = (data.title.clone(), data.source.clone(), data.url.clone());
         self.spawn(move |m| Msg::Alts {
@@ -408,21 +431,25 @@ impl WakuApp {
 
     // ------------------------------------------------------------ playback
 
-    /// Play an episode in a background thread. Order: every server of the
-    /// current source (best first), then — when auto failover is on — the same
-    /// episode on the other sources. `forced` = play exactly this stream.
+    /// Play in a background thread: every server of the current source (best
+    /// first), then — with auto failover — the same episode on other sources.
+    /// `forced` = play exactly this stream.
     pub fn play(&mut self, detail: &AnimeDetail, ep: &Episode, forced: Option<Stream>) {
         if self.play.as_ref().is_some_and(|p| p.running) {
-            self.notify("กำลังเปิดตอนอื่นอยู่ — ปิด player ก่อน");
+            self.notify(tr(
+                "Another episode is opening — close the player first",
+                "กำลังเปิดตอนอื่นอยู่ — ปิด player ก่อน",
+            ));
             return;
         }
         self.play_seq += 1;
         let seq = self.play_seq;
+        let name = i18n::ep_name(ep);
         self.play = Some(PlayState {
             seq,
             title: detail.title.clone(),
-            ep_label: ep.label.clone(),
-            lines: vec![format!("กำลังเตรียม {} …", ep.label)],
+            ep_label: name.clone(),
+            lines: vec![trf!("Preparing {name} …", "กำลังเตรียม {name} …")],
             running: true,
             ok: None,
             detail: detail.clone(),
@@ -439,14 +466,15 @@ impl WakuApp {
                 let _ = tx.send(Msg::Play { seq, evt });
                 ctx.request_repaint();
             };
-            let name = |id: &str| {
+            let sname = |id: &str| {
                 mgr.get(id)
                     .map(|x| x.name().to_string())
                     .unwrap_or_else(|| id.into())
             };
-            let title = |d: &AnimeDetail, e: &Episode| format!("{} — {}", d.title, e.label);
+            let title =
+                |d: &AnimeDetail, e: &Episode| format!("{} — {}", d.title, i18n::ep_name(e));
 
-            // Ok(true) = played, Ok(false) = try elsewhere, Err = stop (player missing …)
+            // Ok(true) played, Ok(false) try elsewhere, Err stop (player missing …)
             let try_streams =
                 |d: &AnimeDetail, e: &Episode, streams: Vec<Stream>| -> Result<bool, String> {
                     for st in streams {
@@ -456,11 +484,11 @@ impl WakuApp {
                             .map(|h| format!("{h}p"))
                             .unwrap_or_else(|| "auto".into());
                         let how = match st.rank {
-                            StreamRank::Direct => "สตรีมตรง",
+                            StreamRank::Direct => tr("direct", "สตรีมตรง"),
                             StreamRank::YtDlp => "yt-dlp",
-                            StreamRank::Unknown => "ทางสุดท้าย",
+                            StreamRank::Unknown => tr("last resort", "ทางสุดท้าย"),
                         };
-                        let line = format!("▶ {} · {} · {q} ({how})", name(&st.source), st.server);
+                        let line = format!("▶ {} · {} · {q} ({how})", sname(&st.source), st.server);
                         send(PlayEvt::Started {
                             card: d.card(),
                             ep: e.clone(),
@@ -468,27 +496,29 @@ impl WakuApp {
                         });
                         match player::play(&s.player_cmd, &st, &v, &title(d, e)) {
                             Ok(PlayOutcome::Played) => return Ok(true),
-                            Ok(PlayOutcome::LoadFailed) => send(PlayEvt::Status(format!(
-                                "↻ {} เปิดไม่ได้ ลองตัวถัดไป",
-                                st.server
-                            ))),
+                            Ok(PlayOutcome::LoadFailed) => {
+                                let sv = &st.server;
+                                send(PlayEvt::Status(trf!(
+                                    "↻ {sv} failed to load, trying the next one",
+                                    "↻ {sv} เปิดไม่ได้ ลองตัวถัดไป"
+                                )))
+                            }
                             Err(err) => return Err(format!("{err:#}")),
                         }
                     }
                     Ok(false)
                 };
             let try_source = |d: &AnimeDetail, e: &Episode| -> Result<bool, String> {
-                send(PlayEvt::Status(format!(
-                    "[{}] กำลังหาเซิร์ฟเวอร์ของ {} …",
-                    name(&d.source),
-                    e.label
+                let (src, en) = (sname(&d.source), i18n::ep_name(e));
+                send(PlayEvt::Status(trf!(
+                    "[{src}] finding servers for {en} …",
+                    "[{src}] กำลังหาเซิร์ฟเวอร์ของ {en} …"
                 )));
                 match mgr.streams(&d.source, &e.url) {
                     Ok((streams, _)) => try_streams(d, e, streams),
                     Err(err) => {
                         send(PlayEvt::Status(format!(
-                            "✗ [{}] {}",
-                            name(&d.source),
+                            "✗ [{src}] {}",
                             first_line(&format!("{err:#}"))
                         )));
                         Ok(false)
@@ -506,7 +536,13 @@ impl WakuApp {
                 if !s.auto_failover {
                     return Ok(false);
                 }
-                send(PlayEvt::Status("⇄ กำลังหาเรื่องเดียวกันจากแหล่งอื่น …".into()));
+                send(PlayEvt::Status(
+                    tr(
+                        "⇄ Looking for the same title on other sources …",
+                        "⇄ กำลังหาเรื่องเดียวกันจากแหล่งอื่น …",
+                    )
+                    .into(),
+                ));
                 let mut alts = mgr.alternatives(&detail.title, &detail.source);
                 let rank = |id: &str| {
                     s.source_order
@@ -526,10 +562,10 @@ impl WakuApp {
                         continue;
                     };
                     let Some(e2) = SourceManager::match_episode(&detail, &ep, &other) else {
-                        send(PlayEvt::Status(format!(
-                            "– [{}] ไม่มี {}",
-                            name(&other.source),
-                            ep.label
+                        let (src, en) = (sname(&other.source), i18n::ep_name(&ep));
+                        send(PlayEvt::Status(trf!(
+                            "– [{src}] has no {en}",
+                            "– [{src}] ไม่มี {en}"
                         )));
                         continue;
                     };
@@ -542,7 +578,11 @@ impl WakuApp {
             match result {
                 Ok(true) => send(PlayEvt::Finished),
                 Ok(false) => send(PlayEvt::Failed(
-                    "ทุกเซิร์ฟเวอร์/ทุกแหล่งเปิดไม่ได้ ลองเลือกเซิร์ฟเวอร์เองหรือดูแหล่งอื่น".into(),
+                    tr(
+                        "No server on any source could be opened. Try choosing a server or another source.",
+                        "ทุกเซิร์ฟเวอร์/ทุกแหล่งเปิดไม่ได้ ลองเลือกเซิร์ฟเวอร์เองหรือดูแหล่งอื่น",
+                    )
+                    .into(),
                 )),
                 Err(e) => send(PlayEvt::Failed(e)),
             }
@@ -637,13 +677,14 @@ impl WakuApp {
             PlayEvt::Status(s) => p.lines.push(s),
             PlayEvt::Started { card, ep, line } => {
                 p.lines.push(line);
-                p.ep_label = ep.label.clone();
+                p.ep_label = i18n::ep_name(&ep);
                 self.lib.watched(&card, ep.num, &ep.label, &ep.url);
             }
             PlayEvt::Finished => {
                 p.running = false;
                 p.ok = Some(true);
-                p.lines.push("✓ ปิด player แล้ว".into());
+                p.lines
+                    .push(tr("✓ Player closed", "✓ ปิด player แล้ว").into());
             }
             PlayEvt::Failed(e) => {
                 p.running = false;
@@ -658,105 +699,84 @@ impl WakuApp {
 
     // ------------------------------------------------------------ chrome
 
-    fn top_bar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let logo = ui
+    fn sidebar(&mut self, ui: &mut Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(14.0);
+            // avatar
+            let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
+            ui.painter().circle_filled(r.center(), 22.0, PANEL_HI);
+            ui.painter()
+                .circle_stroke(r.center(), 22.0, egui::Stroke::new(1.5, ACCENT));
+            ui.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::USER,
+                regular(22.0),
+                MUTED,
+            );
+            ui.add_space(44.0);
+
+            let items = [
+                (Page::Search, icon::MAGNIFYING_GLASS, tr("Search", "ค้นหา")),
+                (Page::Home, icon::HOUSE, tr("Home", "หน้าแรก")),
+                (Page::Browse, icon::SQUARES_FOUR, tr("Browse", "เรียกดู")),
+                (Page::MyList, icon::BOOKMARK_SIMPLE, tr("My List", "รายการ")),
+                (
+                    Page::History,
+                    icon::CLOCK_COUNTER_CLOCKWISE,
+                    tr("History", "ประวัติ"),
+                ),
+            ];
+            for (p, g, label) in items {
+                let active = self.page == p;
+                if widgets::sidebar_item(ui, g, label, active).clicked() {
+                    if p == Page::Search {
+                        self.search_focus = true;
+                    }
+                    self.go(p);
+                }
+                ui.add_space(4.0);
+            }
+        });
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.add_space(14.0);
+            let r = widgets::sidebar_item(
+                ui,
+                icon::GEAR_SIX,
+                tr("Settings", "ตั้งค่า"),
+                self.page == Page::Settings,
+            );
+            if r.clicked() {
+                self.go(Page::Settings);
+            }
+            // tiny online indicator
+            let ok = self.health.values().filter(|h| h.ok).count();
+            let total = self.mgr.sources().len();
+            let col = if self.health.is_empty() {
+                DIM
+            } else if ok == total {
+                GOOD
+            } else if ok > 0 {
+                WARN
+            } else {
+                BAD
+            };
+            let hr = ui
                 .add(
                     egui::Label::new(
-                        RichText::new(format!("{} waku", icon::PLAY_CIRCLE))
-                            .font(bold(24.0))
-                            .color(ACCENT),
+                        RichText::new(format!("{} {ok}/{total}", icon::BROADCAST))
+                            .size(11.5)
+                            .color(col),
                     )
                     .sense(egui::Sense::click()),
                 )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if logo.clicked() {
-                self.go(Page::Home);
+                .on_hover_text(tr(
+                    "Sources online — click to re-check",
+                    "แหล่งที่ออนไลน์ — คลิกเพื่อตรวจใหม่",
+                ));
+            if hr.clicked() {
+                self.refresh_health();
             }
-            ui.add_space(18.0);
-            for (p, label) in [
-                (Page::Home, "หน้าแรก"),
-                (Page::MyList, "รายการของฉัน"),
-                (Page::History, "ประวัติ"),
-            ] {
-                let active = self.page == p;
-                let r = ui.add(
-                    egui::Button::new(RichText::new(label).font(bold(15.0)).color(if active {
-                        TEXT
-                    } else {
-                        MUTED
-                    }))
-                    .fill(Color32::TRANSPARENT)
-                    .frame(false)
-                    .min_size(vec2(0.0, 36.0)),
-                );
-                if active {
-                    let rr = r.rect;
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_max(
-                            egui::pos2(rr.min.x, rr.max.y + 6.0),
-                            egui::pos2(rr.max.x, rr.max.y + 9.0),
-                        ),
-                        CornerRadius::ZERO,
-                        ACCENT,
-                    );
-                }
-                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    self.go(p);
-                }
-                ui.add_space(10.0);
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let gear = ui.add(
-                    egui::Button::new(RichText::new(icon::GEAR_SIX).size(20.0).color(
-                        if self.page == Page::Settings {
-                            ACCENT
-                        } else {
-                            MUTED
-                        },
-                    ))
-                    .frame(false),
-                );
-                if gear.on_hover_text("ตั้งค่า / แหล่งข้อมูล").clicked()
-                {
-                    self.go(Page::Settings);
-                }
-                // source health summary
-                let ok = self.health.values().filter(|h| h.ok).count();
-                let total = self.mgr.sources().len();
-                let col = if self.health.is_empty() {
-                    DIM
-                } else if ok == total {
-                    GOOD
-                } else if ok > 0 {
-                    WARN
-                } else {
-                    BAD
-                };
-                let r = ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("{}  {ok}/{total}", icon::BROADCAST)).color(col),
-                    )
-                    .sense(egui::Sense::click()),
-                );
-                if r.on_hover_text("แหล่งที่ออนไลน์ — คลิกเพื่อตรวจใหม่").clicked()
-                {
-                    self.refresh_health();
-                }
-                ui.add_space(8.0);
-                let te = egui::TextEdit::singleline(&mut self.search_box)
-                    .hint_text(format!("{}  ค้นหาอนิเมะ (ทุกแหล่ง)", icon::MAGNIFYING_GLASS))
-                    .desired_width(300.0)
-                    .background_color(PANEL)
-                    .margin(Margin::symmetric(10, 7));
-                let r = ui.add(te);
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let q = self.search_box.clone();
-                    self.run_search(&q);
-                }
-            });
         });
     }
 
@@ -795,25 +815,35 @@ impl WakuApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(egui::Button::new(RichText::new(icon::X).size(18.0)).frame(false))
-                    .on_hover_text("ปิดแถบนี้")
+                    .on_hover_text(tr("Close", "ปิด"))
                     .clicked()
                 {
                     close = true;
                 }
                 if !p.running {
-                    if let Some(n) = &nxt
-                        && widgets::primary_button(
+                    if let Some(n) = &nxt {
+                        let en = i18n::ep_name(&n.1);
+                        if widgets::primary_button(
                             ui,
-                            &format!("{}  ตอนถัดไป ({})", icon::SKIP_FORWARD, n.1.label),
+                            &format!(
+                                "{}  {}",
+                                icon::SKIP_FORWARD,
+                                trf!("Next: {en}", "ถัดไป: {en}")
+                            ),
                         )
                         .clicked()
-                    {
-                        next = nxt.clone();
+                        {
+                            next = nxt.clone();
+                        }
                     }
                     if p.ok == Some(false)
                         && widgets::outline_button(
                             ui,
-                            &format!("{}  เลือกเซิร์ฟเวอร์เอง", icon::LIST_NUMBERS),
+                            &format!(
+                                "{}  {}",
+                                icon::LIST_NUMBERS,
+                                tr("Choose server", "เลือกเซิร์ฟเวอร์เอง")
+                            ),
                         )
                         .clicked()
                     {
@@ -866,14 +896,16 @@ impl eframe::App for WakuApp {
         self.images.pump(&ctx);
         self.drain();
 
-        egui::Panel::top("top")
-            .frame(Frame::new().fill(BAR).inner_margin(Margin {
-                left: 28,
-                right: 28,
-                top: 10,
-                bottom: 10,
-            }))
-            .show(ui, |ui| self.top_bar(ui));
+        egui::Panel::left("nav")
+            .exact_size(84.0)
+            .resizable(false)
+            .frame(
+                Frame::new()
+                    .fill(BAR)
+                    .inner_margin(Margin::symmetric(10, 0))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x1d, 0x1d, 0x20))),
+            )
+            .show(ui, |ui| self.sidebar(ui));
 
         if self.play.is_some() {
             egui::Panel::bottom("now_playing")
@@ -903,28 +935,38 @@ impl eframe::App for WakuApp {
                     .id_salt(salt)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        Frame::new()
-                            .inner_margin(Margin {
-                                left: 32,
-                                right: 32,
-                                top: 22,
+                        // pages with a full-bleed hero draw their own margins
+                        let full_bleed = matches!(self.page, Page::Detail | Page::Home);
+                        let m = if full_bleed {
+                            Margin {
+                                left: 0,
+                                right: 0,
+                                top: 0,
                                 bottom: 48,
-                            })
-                            .show(ui, |ui| match self.page {
-                                Page::Home => self.home_page(ui),
-                                Page::Search => self.search_page(ui),
-                                Page::Detail => self.detail_page(ui),
-                                Page::MyList => self.my_list_page(ui),
-                                Page::History => self.history_page(ui),
-                                Page::Settings => self.settings_page(ui),
-                            });
+                            }
+                        } else {
+                            Margin {
+                                left: 36,
+                                right: 36,
+                                top: 28,
+                                bottom: 48,
+                            }
+                        };
+                        Frame::new().inner_margin(m).show(ui, |ui| match self.page {
+                            Page::Home => self.home_page(ui),
+                            Page::Search => self.search_page(ui),
+                            Page::Browse => self.browse_page(ui),
+                            Page::Detail => self.detail_page(ui),
+                            Page::MyList => self.my_list_page(ui),
+                            Page::History => self.history_page(ui),
+                            Page::Settings => self.settings_page(ui),
+                        });
                     });
             });
 
         self.server_modal(&ctx);
         self.toast(&ctx);
 
-        // mouse "back" button
         if ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1)) {
             self.go_back();
         }

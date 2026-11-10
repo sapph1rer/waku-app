@@ -45,6 +45,8 @@ pub struct Settings {
     /// Preferred order for failover (source ids). Missing ids go last.
     pub source_order: Vec<String>,
     pub ui_scale: f32,
+    /// UI language: "en" (default) or "th".
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -56,6 +58,7 @@ impl Default for Settings {
             auto_failover: true,
             source_order: Vec::new(),
             ui_scale: 1.0,
+            language: "en".into(),
         }
     }
 }

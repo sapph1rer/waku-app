@@ -782,10 +782,10 @@ impl WpSource {
 
         let mut tags = Vec::new();
         for (th, label) in [
-            ("ซับไทย", "ซับไทย"),
-            ("พากย์ไทย", "พากย์ไทย"),
-            ("ยังไม่จบ", "ยังไม่จบ"),
-            ("จบแล้ว", "จบแล้ว"),
+            ("ซับไทย", "Sub"),
+            ("พากย์ไทย", "Dub"),
+            ("ยังไม่จบ", "Ongoing"),
+            ("จบแล้ว", "Completed"),
         ] {
             if raw_title.contains(th) {
                 tags.push(label.to_string());
@@ -863,7 +863,7 @@ impl WpSource {
                 episodes.push(Episode {
                     season: 1,
                     num: 1.0,
-                    label: "ดูเลย".into(),
+                    label: "Watch".into(),
                     url: url.to_string(),
                 });
             }
@@ -885,13 +885,13 @@ fn relabel(eps: &mut [Episode]) {
     let multi = eps.windows(2).any(|w| w[0].season != w[1].season);
     for e in eps.iter_mut() {
         let base = if multi {
-            format!("S{} ตอนที่ {}", e.season, fmt_num(e.num))
+            format!("S{} Episode {}", e.season, fmt_num(e.num))
         } else {
-            format!("ตอนที่ {}", fmt_num(e.num))
+            format!("Episode {}", fmt_num(e.num))
         };
         let low = e.label.to_lowercase();
         let extra = if low.contains("พากย์") || low.contains("dub") {
-            " (พากย์ไทย)"
+            " (Dub)"
         } else {
             ""
         };
@@ -1141,8 +1141,10 @@ mod tests {
         assert_eq!(d.title, "Sousou no Frieren คำอธิษฐานในวันที่จากลา");
         assert_eq!(d.episodes.len(), 2);
         assert_eq!(d.episodes[0].num, 1.0);
-        assert_eq!(d.episodes[0].label, "ตอนที่ 1");
-        assert!(d.tags.contains(&"จบแล้ว".to_string()) && d.tags.contains(&"Fantasy".to_string()));
+        assert_eq!(d.episodes[0].label, "Episode 1");
+        assert!(
+            d.tags.contains(&"Completed".to_string()) && d.tags.contains(&"Fantasy".to_string())
+        );
         assert_eq!(
             d.poster.as_deref(),
             Some("https://anime-waku.com/wp-content/uploads/f.jpg")

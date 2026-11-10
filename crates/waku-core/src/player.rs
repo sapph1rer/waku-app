@@ -144,7 +144,7 @@ fn launch(
     cmd.arg(target);
     let status = cmd.status().with_context(|| {
         format!(
-            "เปิด '{}' ไม่ได้ — วาง mpv.exe ไว้ข้างโปรแกรม (./mpv/mpv.exe) หรือตั้ง path ในหน้าตั้งค่า",
+            "cannot start '{}' — put mpv.exe next to the app (./mpv/mpv.exe) or set its path in Settings",
             player.display()
         )
     })?;

@@ -19,7 +19,7 @@ id = "waku"
 name = "Anime-Waku"
 base = "https://anime-waku.com"
 enabled = true
-note = "DooPlay — ตรวจสอบแล้วจาก Waku-cli"
+note = "DooPlay — selectors verified (from Waku-cli)"
 latest_paths = ["/anime/", "/"]
 search_path = "/?s={q}"
 series_path = '^/anime/[^/]+/?$'
@@ -36,7 +36,7 @@ id = "sugoi"
 name = "Anime-Sugoi"
 base = "https://anime-sugoi.net"
 enabled = true
-note = "WordPress + Elementor — หน้าเรื่องคือ /<slug>/ ตอนอยู่ในหน้าเดียวกัน (ยังไม่ยืนยัน player)"
+note = "WordPress + Elementor — title pages are /<slug>/, player markup not verified yet"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 series_path = '^/[^/]+/?$'
@@ -49,7 +49,7 @@ id = "anifume"
 name = "Anifume"
 base = "https://anifume.com"
 enabled = true
-note = "heuristic — ยังไม่ได้ตรวจ markup (กดทดสอบแหล่งในหน้าตั้งค่า)"
+note = "heuristic — markup not verified yet (use Test in Settings)"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
@@ -59,7 +59,7 @@ id = "animeruka"
 name = "AnimeRuka"
 base = "https://animeruka.com"
 enabled = true
-note = "heuristic — ยังไม่ได้ตรวจ markup"
+note = "heuristic — markup not verified yet"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
@@ -69,7 +69,7 @@ id = "fairy"
 name = "FairyAnime"
 base = "https://fairyanime.net"
 enabled = true
-note = "heuristic — ยังไม่ได้ตรวจ markup"
+note = "heuristic — markup not verified yet"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
@@ -79,7 +79,7 @@ id = "hareshi"
 name = "Hareshi"
 base = "https://www.hareshi.net"
 enabled = true
-note = "heuristic — ยังไม่ได้ตรวจ markup (ถ้าเป็น SPA อาจต้องเขียน adapter แยก)"
+note = "heuristic — markup not verified yet (may need a custom adapter if it is an SPA)"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'

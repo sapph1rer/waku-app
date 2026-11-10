@@ -9,6 +9,7 @@
 
 mod app;
 mod detail;
+mod i18n;
 mod images;
 mod pages;
 mod theme;

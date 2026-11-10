@@ -7,13 +7,16 @@ use egui::{
 };
 use std::path::PathBuf;
 
-pub const BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
-pub const BAR: Color32 = Color32::from_rgb(0x14, 0x15, 0x19);
-pub const PANEL: Color32 = Color32::from_rgb(0x23, 0x25, 0x2b);
-pub const PANEL_HI: Color32 = Color32::from_rgb(0x2f, 0x32, 0x3a);
-pub const LINE: Color32 = Color32::from_rgb(0x3a, 0x3d, 0x46);
-pub const ACCENT: Color32 = Color32::from_rgb(0xf4, 0x75, 0x21);
-pub const ACCENT_HI: Color32 = Color32::from_rgb(0xff, 0x8c, 0x3a);
+pub const BG: Color32 = Color32::from_rgb(0x0c, 0x0c, 0x0e);
+pub const BAR: Color32 = Color32::from_rgb(0x14, 0x14, 0x16);
+pub const PANEL: Color32 = Color32::from_rgb(0x23, 0x24, 0x28);
+pub const PANEL_HI: Color32 = Color32::from_rgb(0x2f, 0x30, 0x35);
+pub const CARD: Color32 = Color32::from_rgb(0x22, 0x22, 0x25);
+pub const CARD_HI: Color32 = Color32::from_rgb(0x2c, 0x2a, 0x2b);
+pub const SELECT: Color32 = Color32::from_rgb(0x3d, 0x1f, 0x17);
+pub const LINE: Color32 = Color32::from_rgb(0x34, 0x35, 0x3b);
+pub const ACCENT: Color32 = Color32::from_rgb(0xee, 0x55, 0x24);
+pub const ACCENT_HI: Color32 = Color32::from_rgb(0xff, 0x70, 0x3e);
 pub const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const MUTED: Color32 = Color32::from_rgb(0xa0, 0xa1, 0xa8);
 pub const DIM: Color32 = Color32::from_rgb(0x6b, 0x6e, 0x76);

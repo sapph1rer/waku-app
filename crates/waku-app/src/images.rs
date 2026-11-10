@@ -31,7 +31,13 @@ fn disk_path(url: &str) -> PathBuf {
     cache_dir().join("img").join(format!("{:016x}", h.finish()))
 }
 
-fn fetch(http: &Http, url: &str, referer: &str) -> Result<ColorImage, String> {
+const BLUR: &str = "blur::";
+
+fn fetch(http: &Http, key: &str, referer: &str) -> Result<ColorImage, String> {
+    let (blur, url) = match key.strip_prefix(BLUR) {
+        Some(u) => (true, u),
+        None => (false, key),
+    };
     let path = disk_path(url);
     let bytes = match std::fs::read(&path) {
         Ok(b) if !b.is_empty() => b,
@@ -50,7 +56,10 @@ fn fetch(http: &Http, url: &str, referer: &str) -> Result<ColorImage, String> {
         let _ = std::fs::remove_file(&path);
         e.to_string()
     })?;
-    let img = if img.height() > MAX_H {
+    // hero backdrop: tiny + blurred, the GPU's linear upscale makes it soft and smooth
+    let img = if blur {
+        img.thumbnail(96, 96).blur(2.2)
+    } else if img.height() > MAX_H {
         img.resize(MAX_H * 3, MAX_H, image::imageops::FilterType::Triangle)
     } else {
         img
@@ -102,6 +111,11 @@ impl Images {
             Some(Slot::Ready(t)) => Some(t),
             _ => None,
         }
+    }
+
+    /// Soft, blurred version of an image (for backdrops).
+    pub fn get_blur(&mut self, url: &str, referer: &str) -> Option<&TextureHandle> {
+        self.get(&format!("{BLUR}{url}"), referer)
     }
 
     pub fn failed(&self, url: &str) -> bool {
