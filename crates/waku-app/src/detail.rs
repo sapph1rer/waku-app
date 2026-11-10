@@ -116,10 +116,9 @@ impl WakuApp {
                             },
                         )
                         .clicked()
+                        && let Some(d) = &mut self.detail
                     {
-                        if let Some(d) = &mut self.detail {
-                            d.more = !d.more;
-                        }
+                        d.more = !d.more;
                     }
                     ui.add_space(8.0);
                 }
@@ -229,10 +228,9 @@ impl WakuApp {
             if seasons.len() > 1 {
                 for s in &seasons {
                     if chip(ui, &format!("ซีซั่น {s}"), Some(*s) == season, None).clicked()
+                        && let Some(d) = &mut self.detail
                     {
-                        if let Some(d) = &mut self.detail {
-                            d.season = Some(*s);
-                        }
+                        d.season = Some(*s);
                     }
                 }
             }
@@ -244,10 +242,9 @@ impl WakuApp {
                 };
                 if widgets::ghost_button(ui, &format!("{}  {label}", icon::ARROWS_CLOCKWISE))
                     .clicked()
+                    && let Some(d) = &mut self.detail
                 {
-                    if let Some(d) = &mut self.detail {
-                        d.newest_first = !d.newest_first;
-                    }
+                    d.newest_first = !d.newest_first;
                 }
             });
         });

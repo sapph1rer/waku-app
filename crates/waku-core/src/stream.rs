@@ -36,10 +36,10 @@ impl Trace {
         Self::default()
     }
     pub fn log(&self, msg: impl Into<String>) {
-        if self.on {
-            if let Ok(mut l) = self.lines.lock() {
-                l.push(msg.into());
-            }
+        if self.on
+            && let Ok(mut l) = self.lines.lock()
+        {
+            l.push(msg.into());
         }
     }
     pub fn take(&self) -> Vec<String> {
@@ -176,10 +176,12 @@ fn candidates(txt: &str, page: &str) -> Vec<String> {
     static KV: OnceLock<Regex> = OnceLock::new();
     let mut out: Vec<String> = Vec::new();
     let mut push = |raw: &str| {
-        if let Some(full) = abs(page, raw) {
-            if followable(&full) && full != page && !out.contains(&full) {
-                out.push(full);
-            }
+        if let Some(full) = abs(page, raw)
+            && followable(&full)
+            && full != page
+            && !out.contains(&full)
+        {
+            out.push(full);
         }
     };
     let ifr = IFR.get_or_init(|| Regex::new(r#"(?i)<iframe[^>]+?\ssrc=["']([^"']+)["']"#).unwrap());
@@ -336,11 +338,11 @@ pub fn pick_variant<'a>(vs: &'a [Variant], want: &str) -> &'a Variant {
     let known = || vs.iter().filter(|v| v.height.is_some());
     match w {
         "" | "best" | "auto" | "max" => &vs[0],
-        "worst" | "min" | "low" => known().last().unwrap_or(&vs[0]),
+        "worst" | "min" | "low" => known().next_back().unwrap_or(&vs[0]),
         n => match n.parse::<u32>() {
             Ok(h) => known()
                 .find(|v| v.height.is_some_and(|x| x <= h))
-                .or_else(|| known().last())
+                .or_else(|| known().next_back())
                 .unwrap_or(&vs[0]),
             Err(_) => &vs[0],
         },

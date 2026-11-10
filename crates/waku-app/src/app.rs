@@ -587,37 +587,37 @@ impl WakuApp {
                     }
                 }
                 Msg::Search { seq, source, res } => {
-                    if seq == self.search_seq {
-                        if let Some(slot) = self.search.iter_mut().find(|x| x.0 == source) {
-                            slot.1 = Some(res);
-                        }
+                    if seq == self.search_seq
+                        && let Some(slot) = self.search.iter_mut().find(|x| x.0 == source)
+                    {
+                        slot.1 = Some(res);
                     }
                 }
                 Msg::Detail { url, res } => {
-                    if let Some(d) = &mut self.detail {
-                        if d.card.url == url {
-                            if let Ok(data) = &res {
-                                if d.card.poster.is_none() {
-                                    d.card.poster = data.poster.clone();
-                                }
-                            }
-                            d.data = Some(res);
+                    if let Some(d) = &mut self.detail
+                        && d.card.url == url
+                    {
+                        if let Ok(data) = &res
+                            && d.card.poster.is_none()
+                        {
+                            d.card.poster = data.poster.clone();
                         }
+                        d.data = Some(res);
                     }
                 }
                 Msg::Alts { url, res } => {
-                    if let Some(d) = &mut self.detail {
-                        if matches!(&d.data, Some(Ok(x)) if x.url == url) {
-                            d.alts = Alts::Done(res);
-                        }
+                    if let Some(d) = &mut self.detail
+                        && matches!(&d.data, Some(Ok(x)) if x.url == url)
+                    {
+                        d.alts = Alts::Done(res);
                     }
                 }
                 Msg::Play { seq, evt } => self.on_play(seq, evt),
                 Msg::Streams { seq, res } => {
-                    if let Some(p) = &mut self.pick {
-                        if p.seq == seq {
-                            p.res = Some(res);
-                        }
+                    if let Some(p) = &mut self.pick
+                        && p.seq == seq
+                    {
+                        p.res = Some(res);
                     }
                 }
                 Msg::Diag { source, steps } => {
@@ -801,15 +801,14 @@ impl WakuApp {
                     close = true;
                 }
                 if !p.running {
-                    if let Some(n) = &nxt {
-                        if widgets::primary_button(
+                    if let Some(n) = &nxt
+                        && widgets::primary_button(
                             ui,
                             &format!("{}  ตอนถัดไป ({})", icon::SKIP_FORWARD, n.1.label),
                         )
                         .clicked()
-                        {
-                            next = nxt.clone();
-                        }
+                    {
+                        next = nxt.clone();
                     }
                     if p.ok == Some(false)
                         && widgets::outline_button(

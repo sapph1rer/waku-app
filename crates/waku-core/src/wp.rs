@@ -98,14 +98,13 @@ fn img_url(img: ElementRef, page: &str) -> Option<String> {
         }
     }
     for a in ["data-srcset", "srcset"] {
-        if let Some(s) = v.attr(a) {
-            if let Some(first) = s
+        if let Some(s) = v.attr(a)
+            && let Some(first) = s
                 .split(',')
                 .next()
                 .and_then(|x| x.split_whitespace().next())
-            {
-                return abs(page, first);
-            }
+        {
+            return abs(page, first);
         }
     }
     None
@@ -217,10 +216,10 @@ impl WpSource {
             return false;
         }
         let path = url_path(url);
-        if let Some(re) = &self.episode_re {
-            if re.is_match(&path) {
-                return false;
-            }
+        if let Some(re) = &self.episode_re
+            && re.is_match(&path)
+        {
+            return false;
         }
         match &self.series_re {
             Some(re) => re.is_match(&path),
@@ -356,14 +355,13 @@ impl WpSource {
                 if poster.is_none() {
                     poster = e.select(&img_sel).next().and_then(|i| img_url(i, page));
                 }
-                if title.is_empty() || title.chars().count() < 3 {
-                    if let Some(t) = e
+                if (title.is_empty() || title.chars().count() < 3)
+                    && let Some(t) = e
                         .select(&sel_must("h2, h3, h4, .title, .tt"))
                         .next()
                         .map(text_of)
-                    {
-                        title = t;
-                    }
+                {
+                    title = t;
                 }
                 if badge.is_none() {
                     badge = e
@@ -404,10 +402,8 @@ impl WpSource {
         if !self.p.sitemap_index {
             return Vec::new();
         }
-        if !force {
-            if let Some(i) = self.index.lock().ok().and_then(|g| g.clone()) {
-                return i;
-            }
+        if !force && let Some(i) = self.index.lock().ok().and_then(|g| g.clone()) {
+            return i;
         }
         let path = self.index_file();
         let read = || -> Vec<(String, String)> {
@@ -539,13 +535,12 @@ impl WpSource {
                     break;
                 }
             }
-            if num.is_none() {
-                if let Some((s, n)) = parse_episode(&link_text)
+            if num.is_none()
+                && let Some((s, n)) = parse_episode(&link_text)
                     .or_else(|| parse_episode(&url_path(&full).replace('-', " ")))
-                {
-                    season = s;
-                    num = Some(n);
-                }
+            {
+                season = s;
+                num = Some(n);
             }
             eps.push(Episode {
                 season: season.unwrap_or(1).max(1),
@@ -663,11 +658,12 @@ impl WpSource {
         // iframes written inside scripts / JSON (escaped quotes)
         if let Ok(re) = Regex::new(r#"(?i)<iframe[^>]+?src=\\?["']([^"'\\]+)"#) {
             for cap in re.captures_iter(html) {
-                if let Some(full) = abs(ep_url, &cap[1].replace("\\/", "/")) {
-                    if !full.contains("googletagmanager") && !full.contains("youtube.com/embed") {
-                        let n = out.len() + 1;
-                        push(&mut out, format!("Embed {n}"), ServerKind::Direct(full));
-                    }
+                if let Some(full) = abs(ep_url, &cap[1].replace("\\/", "/"))
+                    && !full.contains("googletagmanager")
+                    && !full.contains("youtube.com/embed")
+                {
+                    let n = out.len() + 1;
+                    push(&mut out, format!("Embed {n}"), ServerKind::Direct(full));
                 }
             }
         }
@@ -737,10 +733,10 @@ impl WpSource {
                     ],
                 ) {
                     Ok((st, body)) => {
-                        if (200..300).contains(&st) {
-                            if let Some(e) = stream::extract_embed(&body, ep_url) {
-                                return Ok(e);
-                            }
+                        if (200..300).contains(&st)
+                            && let Some(e) = stream::extract_embed(&body, ep_url)
+                        {
+                            return Ok(e);
                         }
                         errs.push(format!("POST {ajax} -> HTTP {st}: {}", truncate(&body, 80)));
                     }
@@ -973,10 +969,11 @@ impl Source for WpSource {
             if self.episode_re.is_some() {
                 let doc = Html::parse_document(&html);
                 for a in doc.select(&sel_must("a[href]")) {
-                    if let Some(full) = a.value().attr("href").and_then(|h| abs(&u, h)) {
-                        if self.is_episode_url(&full, "") && !ep_hits.contains(&full) {
-                            ep_hits.push(full);
-                        }
+                    if let Some(full) = a.value().attr("href").and_then(|h| abs(&u, h))
+                        && self.is_episode_url(&full, "")
+                        && !ep_hits.contains(&full)
+                    {
+                        ep_hits.push(full);
                     }
                 }
             }
@@ -1023,10 +1020,10 @@ impl Source for WpSource {
             cards.extend(loaded.into_iter().flatten());
         }
 
-        if cards.is_empty() {
-            if let Some(e) = remote_err {
-                return Err(e);
-            }
+        if cards.is_empty()
+            && let Some(e) = remote_err
+        {
+            return Err(e);
         }
         let slug = |u: &str| {
             percent_decode(&path_segs(u).last().cloned().unwrap_or_default()).replace('-', " ")
