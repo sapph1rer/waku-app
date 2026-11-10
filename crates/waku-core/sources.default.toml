@@ -1,0 +1,85 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Waku sources — แหล่งอนิเมะ (แก้ไฟล์นี้ได้เลย ไม่ต้อง compile ใหม่)
+#
+# ไฟล์นี้ถูกคัดลอกไปไว้ที่โฟลเดอร์ config ตอนเปิดแอปครั้งแรก:
+#   Windows: %APPDATA%\waku\sources.toml
+# แอปอ่านไฟล์นั้นทุกครั้งที่เปิด / กด "โหลดแหล่งใหม่" ในหน้าตั้งค่า
+#
+# ทุกช่องที่เป็น "" = ให้ engine เดาเอง (heuristic)
+#   series_path / episode_path : regex เทียบกับ path ของ URL (decode ภาษาไทยแล้ว)
+#   *_selector                 : CSS selector
+#   title_strip                : regex ตัดคำท้ายชื่อเรื่อง (ซับไทย, ตอนที่ ฯลฯ)
+#   sitemap_index              : true = สร้าง index ชื่อเรื่องจาก sitemap (ค้นหาแม่นขึ้น)
+#
+# เว็บเปลี่ยนโดเมนบ่อย → แก้แค่ base ก็พอ
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[source]]
+id = "waku"
+name = "Anime-Waku"
+base = "https://anime-waku.com"
+enabled = true
+note = "DooPlay — ตรวจสอบแล้วจาก Waku-cli"
+latest_paths = ["/anime/", "/"]
+search_path = "/?s={q}"
+series_path = '^/anime/[^/]+/?$'
+episode_path = '^/ep/[^/]+/?$'
+title_selector = "h1"
+poster_selector = ".sheader .poster img, .poster img"
+synopsis_selector = ".wp-content p, #info .wp-content, [itemprop=description]"
+genre_selector = ".sgeneros a, .genres a"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
+sitemap_index = true
+
+[[source]]
+id = "sugoi"
+name = "Anime-Sugoi"
+base = "https://anime-sugoi.net"
+enabled = true
+note = "WordPress + Elementor — หน้าเรื่องคือ /<slug>/ ตอนอยู่ในหน้าเดียวกัน (ยังไม่ยืนยัน player)"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+series_path = '^/[^/]+/?$'
+episode_path = ""
+title_strip = '\s*(EP\.?\s*\d.*|ตอนที่.*|ซับไทย.*|พากย์ไทย.*)$'
+sitemap_index = true
+
+[[source]]
+id = "anifume"
+name = "Anifume"
+base = "https://anifume.com"
+enabled = true
+note = "heuristic — ยังไม่ได้ตรวจ markup (กดทดสอบแหล่งในหน้าตั้งค่า)"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
+
+[[source]]
+id = "animeruka"
+name = "AnimeRuka"
+base = "https://animeruka.com"
+enabled = true
+note = "heuristic — ยังไม่ได้ตรวจ markup"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
+
+[[source]]
+id = "fairy"
+name = "FairyAnime"
+base = "https://fairyanime.net"
+enabled = true
+note = "heuristic — ยังไม่ได้ตรวจ markup"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
+
+[[source]]
+id = "hareshi"
+name = "Hareshi"
+base = "https://www.hareshi.net"
+enabled = true
+note = "heuristic — ยังไม่ได้ตรวจ markup (ถ้าเป็น SPA อาจต้องเขียน adapter แยก)"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'

@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["crates/waku-core", "crates/waku-app"]

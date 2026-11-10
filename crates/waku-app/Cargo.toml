@@ -1,0 +1,12 @@
+[package]
+name = "waku-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = "0.36"
+egui = "0.36"
+egui-phosphor = "0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+waku-core = { version = "0.1.0", path = "../waku-core" }
