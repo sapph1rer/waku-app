@@ -61,15 +61,14 @@ fn format_label(f: &str) -> &'static str {
 }
 
 impl WakuApp {
-    /// Has any episode of this AniList show been watched (on any source)? fraction of the show, roughly.
-    fn watched_of(&self, anilist_id: u64) -> Option<usize> {
-        let mut eps = std::collections::HashSet::new();
-        for h in &self.lib.history {
-            if self.meta.get(&h.card.url, &h.card.title).and_then(|m| m.anilist_id) == Some(anilist_id) {
-                eps.insert((h.ep_num * 10.0) as i64);
-            }
-        }
-        (!eps.is_empty()).then_some(eps.len())
+    /// The furthest episode watched of this AniList show (on any source), if any.
+    fn watched_of(&self, anilist_id: u64) -> Option<f32> {
+        self.lib
+            .history
+            .iter()
+            .filter(|h| self.meta.get(&h.card.url, &h.card.title).and_then(|m| m.anilist_id) == Some(anilist_id))
+            .map(|h| h.ep_num)
+            .fold(None, |a: Option<f32>, n| Some(a.map_or(n, |a| a.max(n))))
     }
 
     pub fn order_tab(&mut self, ui: &mut Ui, m: Option<&AnimeMeta>) {
@@ -172,8 +171,9 @@ impl WakuApp {
             if let Some(id2) = mm.anilist_id
                 && let Some(n) = self.watched_of(id2)
             {
-                let total = mm.episodes.unwrap_or(0) as usize;
-                let txt = if total > 0 && n >= total { tr("watched", "ดูจบแล้ว").to_string() } else { crate::trf!("{n} eps watched", "ดูแล้ว {n} ตอน") };
+                let total = mm.episodes.unwrap_or(0) as f32;
+                let ep = waku_core::text::fmt_num(n);
+                let txt = if total > 0.0 && n >= total { tr("watched", "ดูจบแล้ว").to_string() } else { crate::trf!("watched up to EP {ep}", "ดูถึงตอน {ep}") };
                 ui.painter().text(pos2(rx, rect.min.y + 40.0), egui::Align2::RIGHT_TOP, format!("{}  {txt}", icon::CHECK_CIRCLE), egui::FontId::proportional(12.5), GOOD);
             }
             if !here && mm.status.as_deref() == Some("NOT_YET_RELEASED") {

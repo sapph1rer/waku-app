@@ -1482,7 +1482,10 @@ impl WakuApp {
                         v.view.engine_name(), st.loaded, st.position, st.duration, st.paused, st.buffering, st.error, st.width, st.height, st.vcodec, st.hwdec, st.fps, st.dropped_frames, st.decoder_drops, st.title
                     );
                 }
+                out += &self.dev_party("");
             }
+            // watch party: `party host`, `party join CODE`, `party chat TEXT`, `party pause|play`, `party leave`
+            "party" => out += &self.dev_party(&arg),
             _ => out += &format!("unknown command {line}\n"),
         }
         if !out.is_empty()
@@ -1652,6 +1655,8 @@ impl eframe::App for WakuApp {
             egui::CentralPanel::default()
                 .frame(Frame::new().fill(Color32::BLACK))
                 .show(ui, |ui| self.player_screen(ui));
+            // the watch party follows the player (and its chat floats over the video)
+            self.party_ui(&ctx);
             self.toast(&ctx);
             return;
         }

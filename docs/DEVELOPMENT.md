@@ -259,6 +259,16 @@ GUI: โลโก้แอป (`crates/waku-app/assets`, ฝังใน exe ด
 - ออกเวอร์ชัน: แก้ `version` ใน `crates/waku-app/Cargo.toml` แล้ว
   `powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Notes "..."` (build → `dist\waku-windows-x64.zip` + `.sha256` → `gh release create`)
 
+### ผลทดสอบบน Windows 12 พ.ย. 2026 (หลังออก v0.1.0)
+
+- Watch party ผ่าน ntfy.sh จริง (2 หน้าต่าง, รีโมต `party host|join CODE|chat|pause|play|seek|leave` ใน dev):
+  เข้าห้อง/รายชื่อ/แชทสองทาง ✅, A เล่น → B เปิดตอนเดียวกันเอง (ห่าง ~1 วิ) ✅, หยุด ✅, เลื่อนไป 400 วิ + เล่น ✅
+  **บั๊กที่เจอและแก้แล้ว:** ระหว่างดูวิดีโอ `ui()` return ก่อนถึง `party_ui` → ปาร์ตี้ไม่ sync ตอนเล่น (v0.1.0 มีบั๊กนี้)
+- สถานะแหล่ง ✅ (ตัวเลขจริง), Discover/AniList ✅, ลำดับการดู ✅ (Frieren 6 ภาค) — แก้ป้าย "ดูแล้ว N ตอน" เป็น "ดูถึงตอน N"
+  (history เก็บแค่ตอนล่าสุดต่อเรื่อง), ค้นหาด้วยภาพ ✅ (เฟรม Frieren → EP 3 นาที 4:07 98%) → หาแล้วเล่น → เริ่มที่ 247.7 วิ ✅
+  (`party scene <ไฟล์รูป>` ใน dev = ค้นหาด้วยไฟล์)
+- กฎดึงข้อมูล revision 1 บน GitHub: เครื่องทดสอบขึ้น "รอให้กดใช้" เพราะไฟล์เดิมสร้างจากรุ่นก่อนมี revision (ตามที่ออกแบบ)
+
 ### ยังไม่ได้ทดสอบ / ปัญหาที่รู้
 
 - Anime-Waku (Psyren, Dark Machine), FairyAnime: เล่นจากตัวเล่นหลัก 1080p บน Windows ได้แล้ว; ปุ่ม ✕ "ดูต่อ" บน Windows และเมนูความละเอียดยังไม่ได้กดทดสอบผ่านรีโมต

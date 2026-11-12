@@ -709,3 +709,68 @@ pub(crate) mod tests {
         g.leave();
     }
 }
+
+impl WakuApp {
+    /// Development remote control (`WAKU_DEV_DIR`): drive a party without clicking.
+    pub fn dev_party(&mut self, arg: &str) -> String {
+        let (cmd, rest) = arg.split_once(' ').unwrap_or((arg, ""));
+        let server = if self.settings.party_server.trim().is_empty() { crate::relay::DEFAULT_SERVER.to_string() } else { self.settings.party_server.clone() };
+        match cmd {
+            "host" | "join" => {
+                if let Some(mut p) = self.party.take() {
+                    p.leave();
+                }
+                let name = if rest.trim().is_empty() || cmd == "join" { self.party_name() } else { rest.trim().to_string() };
+                let code = (cmd == "join").then(|| rest.split_whitespace().next().unwrap_or("").to_string());
+                match relay_party(&server, code.as_deref(), name, self.tx.clone(), self.ctx.clone()) {
+                    Ok(p) => self.party = Some(p),
+                    Err(e) => return format!("party error: {e}\n"),
+                }
+            }
+            "chat" => {
+                let name = self.party_name();
+                if let Some(p) = self.party.as_mut() {
+                    p.send(&Wire::Chat { name: name.clone(), text: rest.to_string() });
+                }
+                self.on_party(Wire::Chat { name, text: rest.to_string() });
+            }
+            "pause" | "play" => {
+                if let Some(v) = self.view.as_mut() {
+                    v.view.set_paused(cmd == "pause");
+                }
+            }
+            "seek" => {
+                if let (Some(v), Ok(t)) = (self.view.as_mut(), rest.trim().parse::<f64>()) {
+                    v.view.seek_to(t);
+                }
+            }
+            "leave" => {
+                if let Some(mut p) = self.party.take() {
+                    p.leave();
+                }
+            }
+            // (not party, but handy here) search by a picture file: `party scene C:\path\shot.png`
+            "scene" => match std::fs::read(rest.trim()) {
+                Ok(b) => self.scene_search(b),
+                Err(e) => return format!("scene: {e}\n"),
+            },
+            _ => {}
+        }
+        match &self.party {
+            _ if cmd == "scene" || !self.scene.hits.is_empty() || self.scene.busy => format!(
+                "scene: busy={} err={:?} hits={:?}\n",
+                self.scene.busy,
+                self.scene.error,
+                self.scene.hits.iter().map(|h| format!("{} ep={:?} at={:.0} sim={:.2}", h.title_romaji, h.episode, h.at, h.similarity)).collect::<Vec<_>>()
+            ),
+            Some(p) => format!(
+                "party: {} host={} members={:?} chat={:?}\n",
+                p.address,
+                p.is_host(),
+                p.members,
+                p.chat.iter().rev().take(4).rev().map(|(n, t)| format!("{n}:{t}")).collect::<Vec<_>>()
+            ),
+            None => "party: none\n".into(),
+        }
+    }
+}
