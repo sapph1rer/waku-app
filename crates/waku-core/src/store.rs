@@ -221,14 +221,38 @@ impl Library {
         self.save();
     }
 
+    /// A series page brought its picture: cards saved without one (history, My List) get it.
+    pub fn fill_poster(&mut self, url: &str, poster: &str) -> bool {
+        let mut changed = false;
+        for c in self.history.iter_mut().map(|h| &mut h.card).chain(self.my_list.iter_mut()) {
+            if c.url == url && c.poster.as_deref() != Some(poster) && c.poster.is_none() {
+                c.poster = Some(poster.to_string());
+                changed = true;
+            }
+        }
+        if changed {
+            self.save();
+        }
+        changed
+    }
+
     /// Record a watched episode (one entry per anime title, newest first).
     pub fn watched(&mut self, card: &AnimeCard, ep_num: f32, ep_label: &str, ep_url: &str, dub: bool) {
-        // one entry per show, whichever site it was watched on
+        // one entry per show, whichever site it was watched on; a card without a picture keeps the one it had
+        let mut card = card.clone();
+        if card.poster.is_none() {
+            card.poster = self
+                .history
+                .iter()
+                .find(|h| h.card.url == card.url)
+                .and_then(|h| h.card.poster.clone())
+                .or_else(|| self.my_list.iter().find(|c| c.url == card.url).and_then(|c| c.poster.clone()));
+        }
         self.history.retain(|h| h.card.url != card.url && !crate::text::same_show(&h.card.title, &card.title));
         self.history.insert(
             0,
             HistoryEntry {
-                card: card.clone(),
+                card,
                 ep_num,
                 ep_label: ep_label.into(),
                 ep_url: ep_url.into(),

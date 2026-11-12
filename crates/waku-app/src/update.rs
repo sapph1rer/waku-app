@@ -44,6 +44,10 @@ pub struct UpdateState {
     /// newer sources rules waiting because sources.toml was edited by hand: (text, revision)
     pub sources_pending: Option<(String, u32)>,
     pub sources_note: Option<String>,
+    /// the check made at start-up is still shown on the start-up screen
+    pub startup: bool,
+    /// the user said "later" to the version offered on the start-up screen
+    pub later: bool,
 }
 
 pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
@@ -277,7 +281,9 @@ impl WakuApp {
         match res {
             Ok(r) => {
                 let newer = is_newer(r.version);
-                if newer && !manual {
+                // on the start-up screen a new version is offered there (not for a build from the source tree)
+                let on_splash = self.upd.startup && self.splash_out.is_none() && !dev_build();
+                if newer && !manual && !on_splash {
                     let tag = r.tag.clone();
                     self.notify(crate::trf!("Waku {tag} is out — Settings › Updates", "Waku {tag} ออกแล้ว — ไปที่ ตั้งค่า › อัปเดต"));
                 }
@@ -307,7 +313,13 @@ impl WakuApp {
     pub fn on_installed(&mut self, res: Result<PathBuf, String>) {
         self.upd.progress = None;
         match res {
-            Ok(p) => self.upd.installed = Some(p),
+            Ok(p) => {
+                // asked for on the start-up screen: straight into the new version
+                if self.upd.startup && self.splash_out.is_none() {
+                    self.restart_into(&p);
+                }
+                self.upd.installed = Some(p);
+            }
             Err(e) => self.upd.error = Some(crate::app::first_line(&e).to_string()),
         }
     }
@@ -377,6 +389,52 @@ impl WakuApp {
     }
 
     /// Settings › Updates.
+    /// On the start-up screen: a newer Waku is out — install it now (then the new one starts) or later.
+    pub fn splash_offer(&mut self, ui: &mut egui::Ui, top: egui::Pos2, a: f32) {
+        use crate::theme::*;
+        use crate::widgets;
+        use egui::{RichText, vec2};
+        let Some(r) = self.upd.latest.clone() else { return };
+        let w = 420.0;
+        let rect = egui::Rect::from_min_size(egui::pos2(top.x - w / 2.0, top.y), vec2(w, 260.0));
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Center)));
+        ui.multiply_opacity(a);
+        let tag = r.tag.clone();
+        ui.label(RichText::new(crate::trf!("Waku {tag} is out", "Waku {tag} ออกแล้ว")).font(bold(19.0)).color(ACCENT_HI));
+        ui.label(RichText::new(crate::trf!("You have {VERSION}", "เวอร์ชันที่ใช้อยู่ {VERSION}")).size(12.5).color(MUTED));
+        ui.add_space(8.0);
+        // what changed: the first few lines of the release notes
+        let notes: Vec<&str> = r.notes.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.to_lowercase().starts_with("waku v")).take(3).collect();
+        for l in notes {
+            ui.label(RichText::new(l).size(13.0).color(TEXT));
+        }
+        ui.add_space(12.0);
+        if let Some(prog) = &self.upd.progress {
+            let (done, total) = prog.lock().map(|g| *g).unwrap_or((0, 0));
+            let k = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+            ui.add(egui::ProgressBar::new(k).desired_width(300.0).fill(ACCENT));
+            let mb = |b: u64| b as f64 / 1_048_576.0;
+            ui.label(RichText::new(format!("{} {:.1} / {:.1} MB", tr("Downloading", "กำลังดาวน์โหลด"), mb(done), mb(total.max(r.asset_size)))).size(12.5).color(MUTED));
+            return;
+        }
+        if let Some(e) = self.upd.error.clone() {
+            ui.label(RichText::new(e).color(BAD).size(12.5));
+            ui.add_space(6.0);
+        }
+        ui.horizontal(|ui| {
+            // centre the two buttons
+            ui.add_space(((w - 270.0) / 2.0).max(0.0));
+            if widgets::play_button(ui, tr("Update now", "อัปเดตเลย")).clicked() {
+                self.start_install();
+            }
+            if widgets::secondary_button(ui, tr("Later", "ไว้ทีหลัง")).clicked() {
+                self.upd.later = true;
+                let tag = r.tag.clone();
+                self.notify(crate::trf!("Waku {tag} waits in Settings › Updates", "Waku {tag} รออยู่ใน ตั้งค่า › อัปเดต"));
+            }
+        });
+    }
+
     pub fn updates_section(&mut self, ui: &mut egui::Ui) {
         use crate::theme::*;
         use crate::widgets;

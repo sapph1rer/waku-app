@@ -89,7 +89,31 @@ fn console_mode(args: &[String]) -> Option<i32> {
     }
 }
 
+/// Panics (on any thread) are appended to `<config>/waku/crash.log` with a backtrace, for bug reports.
+fn crash_log() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let path = waku_core::profile::config_dir().join("crash.log");
+        let bt = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let line = format!("--- waku {} · unix {when} · thread {thread}\n{info}\n{bt}\n", env!("CARGO_PKG_VERSION"));
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        // keep the file small: start over past 1 MB
+        let old = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut f = std::fs::OpenOptions::new().create(true).append(old < 1 << 20).write(true).truncate(old >= 1 << 20).open(&path);
+        if let Ok(f) = &mut f {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+        }
+        default(info);
+    }));
+}
+
 fn main() -> eframe::Result {
+    crash_log();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // waku-browser.exe next to waku.exe: Cloudflare checks and obfuscated players go through it
     waku_core::browser::install();

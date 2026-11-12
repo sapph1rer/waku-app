@@ -148,10 +148,35 @@ pub fn looks_like_episode(text: &str) -> bool {
 
 // ------------------------------------------------------------------ ranking
 
+/// Cyrillic / Greek letters that look like Latin ones, as the Latin letter (lower case in, lower case out):
+/// titles are sometimes typed with them by mistake.
+pub fn fold_lookalike(c: char) -> char {
+    match c {
+        'а' => 'a',
+        'в' => 'b',
+        'е' | 'ё' => 'e',
+        'к' => 'k',
+        'м' => 'm',
+        'н' => 'h',
+        'о' | 'ο' => 'o',
+        'р' | 'ρ' => 'p',
+        'с' => 'c',
+        'т' => 't',
+        'у' => 'y',
+        'х' | 'χ' => 'x',
+        'і' | 'ι' => 'i',
+        'ј' => 'j',
+        'ѕ' => 's',
+        'ν' => 'v',
+        _ => c,
+    }
+}
+
 pub fn norm(s: &str) -> String {
     let t: String = s
         .to_lowercase()
         .chars()
+        .map(fold_lookalike)
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
     clean(&t)

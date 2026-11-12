@@ -119,7 +119,8 @@ impl AnimeMeta {
             return false; // the user cleared the match: do not look it up again
         }
         if !self.matched {
-            return age > 3 * 86400;
+            // (an answer from an older matcher is asked again: the matcher has learned since)
+            return age > 3 * 86400 || self.eps_rev < EPS_REV;
         }
         if self.status.as_deref() == Some("RELEASING") {
             return age > 12 * 3600;
@@ -202,6 +203,7 @@ pub fn norm(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(|c| c.to_lowercase())
+        .map(crate::text::fold_lookalike)
         .collect()
 }
 
@@ -326,7 +328,8 @@ pub fn pick_best(query: &str, cands: Vec<AnimeMeta>, local_eps: u32) -> Option<A
         .map(|(_, c)| c)
 }
 
-pub const EPS_REV: u32 = 2;
+/// 3: unmatched shows are looked up again (look-alike letters, longest-word search, synopsis names)
+pub const EPS_REV: u32 = 3;
 
 /// First non-empty title wins, in the order of `layers` (best first).
 pub fn merge_eps(layers: Vec<Vec<EpMeta>>) -> Vec<EpMeta> {
@@ -369,8 +372,60 @@ fn finish(mut m: AnimeMeta, manual: bool) -> AnimeMeta {
 
 /// Find the AniList entry for a site series page. `Ok(meta with matched = false)` when nothing fits.
 pub fn identify(http: &Http, site_title: &str, url: &str, local_eps: u32) -> Result<AnimeMeta> {
+    identify_hint(http, site_title, url, local_eps, "")
+}
+
+/// Latin-script names in a (Thai) synopsis, e.g. "Juuou Mujin Dandivine หลังจากที่…" -> ["Juuou Mujin Dandivine"]:
+/// Thai sites often name the show in romaji there while their title is in Thai only. Runs of two words or more,
+/// from the first few runs of the text.
+pub fn latin_names(text: &str) -> Vec<String> {
+    let mut runs: Vec<String> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let flush = |cur: &mut Vec<String>, runs: &mut Vec<String>| {
+        if !cur.is_empty() {
+            runs.push(cur.join(" "));
+            cur.clear();
+        }
+    };
+    for tok in text.split(|c: char| c.is_whitespace()) {
+        if tok.is_empty() {
+            continue;
+        }
+        // a word ends a run when it carries non-Latin letters or closing punctuation
+        let word: String = tok.chars().filter(|c| c.is_ascii_alphanumeric() || "'!?:-&".contains(*c)).collect();
+        let latin = !word.is_empty() && tok.chars().all(|c| c.is_ascii() && !",.;()[]\"“”".contains(c) || c == ':' );
+        let letters = word.chars().filter(|c| c.is_ascii_alphabetic()).count();
+        if latin && letters >= 1 {
+            cur.push(word);
+        } else {
+            // "Dandivine," still belongs to the run it ends
+            if !word.is_empty() && letters >= 2 && tok.chars().all(|c| c.is_ascii()) {
+                cur.push(word);
+            }
+            flush(&mut cur, &mut runs);
+        }
+        if runs.len() >= 4 {
+            break;
+        }
+    }
+    flush(&mut cur, &mut runs);
+    runs.into_iter()
+        .take(4)
+        .filter(|r| r.split(' ').count() >= 2 && r.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 6)
+        .take(2)
+        .collect()
+}
+
+/// `identify` that may also use names found in `hint` (the site's synopsis).
+pub fn identify_hint(http: &Http, site_title: &str, url: &str, local_eps: u32, hint: &str) -> Result<AnimeMeta> {
     let mut last_err = None;
-    for q in queries_for(site_title, url) {
+    let mut queries = queries_for(site_title, url);
+    for n in latin_names(hint) {
+        if !queries.iter().any(|q| norm(q) == norm(&n)) {
+            queries.push(n);
+        }
+    }
+    for q in &queries {
         let mut tries = vec![q.clone()];
         tries.extend(query_variants(&q));
         for t in tries {
@@ -384,12 +439,29 @@ pub fn identify(http: &Http, site_title: &str, url: &str, local_eps: u32) -> Res
             }
         }
     }
+    // AniList's text search misses some spellings (its romaji may even hold look-alike letters: "Juuоu" with a
+    // Cyrillic о); its longest word finds the entry, which still has to match the whole title
+    for q in &queries {
+        let words: Vec<&str> = q.split_whitespace().collect();
+        let Some(w) = words.iter().copied().filter(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 6).max_by_key(|w| w.len()) else {
+            continue;
+        };
+        if words.len() < 2 {
+            continue;
+        }
+        if let Ok(c) = anilist::search(http, w)
+            && let Some(m) = pick_best(q, c, local_eps)
+        {
+            return Ok(finish(m, false));
+        }
+    }
     if let Some(e) = last_err {
         return Err(e);
     }
     Ok(AnimeMeta {
         matched: false,
         fetched_at: now(),
+        eps_rev: EPS_REV,
         ..Default::default()
     })
 }
@@ -708,5 +780,18 @@ mod tests {
         );
         st.clear("https://b.com/solo-leveling");
         assert!(st.get("https://b.com/solo-leveling/", "zzz").is_none());
+    }
+}
+
+#[cfg(test)]
+mod latin_tests {
+    use super::latin_names;
+    #[test]
+    fn names_in_thai_synopsis() {
+        let t = "Juuou Mujin Dandivine หลังจากที่หุ่นยนต์รวมร่าง Dandevine ได้ขับไล่ศัตรูลึกลับ Aposdole ไปได้สำเร็จ";
+        assert_eq!(latin_names(t), vec!["Juuou Mujin Dandivine".to_string()]);
+        assert!(latin_names("เรื่องราวของเด็กหนุ่ม").is_empty());
+        assert_eq!(super::norm("Juu\u{43e}u Mujin"), super::norm("Juuou Mujin"));
+        assert_eq!(latin_names("จาก Sousou no Frieren, ภาคต่อ"), vec!["Sousou no Frieren".to_string()]);
     }
 }

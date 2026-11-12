@@ -41,7 +41,8 @@ pub fn start_meta_worker(ctx: &egui::Context, tx: Sender<Msg>) -> Sender<(String
             return;
         };
         while let Ok((url, title)) = qrx.recv() {
-            let res = meta::identify(&http, &title, &url, 0).map_err(|e| format!("{e:#}"));
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| meta::identify(&http, &title, &url, 0).map_err(|e| format!("{e:#}"))))
+                .unwrap_or_else(|_| Err("internal error (crash.log)".into()));
             if tx.send(Msg::Meta { url, title, res }).is_err() {
                 break;
             }
@@ -158,10 +159,19 @@ impl WakuApp {
         let mut out = c.clone();
         match self.meta.get(&c.url, &c.title) {
             Some(m) if m.matched => {
-                if m.cover_url.is_some() {
-                    out.poster = m.cover_url.clone();
+                // AniList's cover, unless it would not load (then the site's own picture)
+                if let Some(u) = &m.cover_url
+                    && (!self.images.gave_up(u) || out.poster.is_none())
+                {
+                    out.poster = Some(u.clone());
                 }
                 out.title = self.title_for(Some(m), &c.title);
+            }
+            // not found last time: asked again once that answer is old (or from an older matcher)
+            Some(m) if m.stale(meta::now()) => {
+                if self.settings.fetch_meta && self.meta_pending.insert(c.url.clone()) {
+                    let _ = self.meta_queue.send((c.url.clone(), c.title.clone()));
+                }
             }
             Some(_) => {}
             None => {
@@ -189,32 +199,56 @@ impl WakuApp {
     /// A Continue Watching card: like `draw_card`, with a "remove" button on the poster while hovered.
     pub fn draw_history_card(&mut self, ui: &mut Ui, c: &AnimeCard, ep_url: &str, sub: &str, act: &mut Option<CardAct>) {
         let view = self.card_view(c);
+        if view.poster.is_none() {
+            self.find_poster(c);
+        }
         let referer = self.referer(&c.source);
         let resp = widgets::anime_card(ui, &mut self.images, &view, &referer, sub);
         let in_list = self.lib.in_list(&c.url);
         let identified = self.meta_of(&c.url, &c.title).is_some();
         card_menu_ext(&resp, c, in_list, identified, Some(ep_url), act);
-        // a small "remove" button, always there (dim), bright on hover; its own hit area on top of the card
+        // a small "remove" button that shows only while the pointer is over the card
         let id = egui::Id::new(("unwatch", ep_url));
         let close_c = resp.rect.min + egui::vec2(widgets::CARD_W - 16.0, 16.0);
         let close_r = egui::Rect::from_center_size(close_c, egui::vec2(30.0, 30.0));
-        let hit = ui.interact(close_r, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        let card_hv = ui.ctx().animate_bool_with_time(id.with("card"), resp.hovered() || hit.hovered(), 0.15);
+        let hit = ui.interact(close_r, id, egui::Sense::click());
+        let alpha = ui.ctx().animate_bool_with_time(id.with("card"), resp.hovered() || hit.hovered(), 0.15);
+        let hit = if alpha > 0.0 { hit.on_hover_cursor(egui::CursorIcon::PointingHand) } else { hit };
         let hv = ui.ctx().animate_bool_with_time(id.with("hv"), hit.hovered(), 0.1);
-        let p = ui.painter();
-        let alpha = 0.55 + 0.45 * card_hv;
-        p.circle_filled(close_c, 12.0, widgets::lerp_color(egui::Color32::from_black_alpha(200), egui::Color32::from_rgb(0xd9, 0x3a, 0x3a), hv).gamma_multiply(alpha));
-        p.circle_stroke(close_c, 12.0, egui::Stroke::new(1.0, egui::Color32::from_white_alpha((60.0 * alpha) as u8)));
-        let k = 4.2;
-        let st = egui::Stroke::new(1.8, egui::Color32::WHITE.gamma_multiply(alpha));
-        p.line_segment([close_c + egui::vec2(-k, -k), close_c + egui::vec2(k, k)], st);
-        p.line_segment([close_c + egui::vec2(-k, k), close_c + egui::vec2(k, -k)], st);
+        if alpha > 0.0 {
+            let p = ui.painter();
+            p.circle_filled(close_c, 12.0, widgets::lerp_color(egui::Color32::from_black_alpha(200), egui::Color32::from_rgb(0xd9, 0x3a, 0x3a), hv).gamma_multiply(alpha));
+            p.circle_stroke(close_c, 12.0, egui::Stroke::new(1.0, egui::Color32::from_white_alpha((60.0 * alpha) as u8)));
+            let k = 4.2;
+            let st = egui::Stroke::new(1.8, egui::Color32::WHITE.gamma_multiply(alpha));
+            p.line_segment([close_c + egui::vec2(-k, -k), close_c + egui::vec2(k, k)], st);
+            p.line_segment([close_c + egui::vec2(-k, k), close_c + egui::vec2(k, -k)], st);
+        }
         let hit = hit.on_hover_text(tr("Remove from Continue Watching", "เอาออกจากดูต่อ"));
         if hit.clicked() {
             *act = Some(CardAct::Unwatch(ep_url.to_string()));
         } else if resp.clicked() && !hit.hovered() {
             *act = Some(CardAct::Open(c.clone()));
         }
+    }
+
+    /// A saved card has no picture (some sites list shows without one): take it from the series page, cached
+    /// or fetched once in the background (the answer goes through `Msg::Detail`, which fills it in).
+    pub fn find_poster(&mut self, c: &AnimeCard) {
+        if !self.poster_tried.insert(c.url.clone()) {
+            return;
+        }
+        if let Some(d) = crate::app::detail_cache_load(&c.url) {
+            if let Some(p) = &d.poster {
+                self.lib.fill_poster(&c.url, p);
+            }
+            self.ensure_meta_detail(&d);
+            if d.poster.is_some() {
+                return;
+            }
+        }
+        let (src, url) = (c.source.clone(), c.url.clone());
+        self.spawn(move |m| Msg::Detail { url: url.clone(), res: m.detail(&src, &url).map_err(|e| format!("{e:#}")) });
     }
 
     /// Full metadata (with episode titles) for an opened series page.
@@ -225,14 +259,17 @@ impl WakuApp {
         let existing = self.meta.get(&d.url, &d.title).cloned();
         // an automatic match to a show that has not aired, for a page that has episodes, is wrong: match again
         let existing = existing.filter(|m| m.manual || !m.matched || d.episodes.is_empty() || m.status.as_deref() != Some("NOT_YET_RELEASED"));
+        // not found by its title, but the synopsis names the show in Latin letters: one more try with those
+        let hint_names = meta::latin_names(&d.synopsis);
+        let try_hint = existing.as_ref().is_some_and(|m| !m.matched && !m.manual) && !hint_names.is_empty() && self.hint_tried.insert(d.url.clone());
         if let Some(m) = &existing
             && !m.stale(meta::now())
-            && ((m.enriched && m.anizip && m.eps_rev >= meta::EPS_REV) || !m.matched)
+            && ((m.enriched && m.anizip && m.eps_rev >= meta::EPS_REV) || (!m.matched && !try_hint))
         {
             return;
         }
         self.meta_pending.insert(d.url.clone());
-        let (url, title, eps) = (d.url.clone(), d.title.clone(), d.episodes.len() as u32);
+        let (url, title, eps, synopsis) = (d.url.clone(), d.title.clone(), d.episodes.len() as u32, d.synopsis.clone());
         self.spawn(move |mgr| {
             let http = mgr.http();
             let res = (|| -> anyhow::Result<AnimeMeta> {
@@ -248,7 +285,7 @@ impl WakuApp {
                         f.fetched_at = meta::now();
                         f
                     }
-                    _ => meta::identify(http, &title, &url, eps)?,
+                    _ => meta::identify_hint(http, &title, &url, eps, &synopsis)?,
                 };
                 Ok(if m.matched { meta::enrich(http, m) } else { m })
             })();

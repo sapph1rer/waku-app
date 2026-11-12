@@ -105,6 +105,8 @@ pub enum Msg {
     Scene(Result<Vec<waku_core::meta::tracemoe::SceneHit>, String>),
     /// the picture behind a link was downloaded (for the picture search)
     SceneBytes(Result<Vec<u8>, String>),
+    /// a background job panicked (details in crash.log)
+    Crashed,
     /// a Source health test finished
     SourceTested(String),
     /// opening / ending times of an episode in the player (AniSkip)
@@ -238,6 +240,8 @@ pub struct WakuApp {
     pub hero_idx: usize,
     pub hero_prev: usize,
     pub hero_t0: f64,
+    /// when the slide on show came in (the cross-fade runs from it; it does not wait for the pointer)
+    pub hero_shown: f64,
     /// height of the hero's text block last frame (it is laid out from the bottom up)
     pub hero_text_h: f32,
     /// the app logo (sidebar, loading screen)
@@ -245,6 +249,8 @@ pub struct WakuApp {
     /// start-up screen: when the app started, when it began to fade out (None = still showing)
     pub splash_t0: Option<f64>,
     pub splash_out: Option<f64>,
+    /// when the start-up screen moved on to the sources (after the update check)
+    pub splash_conn_t0: Option<f64>,
     /// test remote control (WAKU_DEV_DIR)
     pub dev: Option<crate::dev::Dev>,
     pub search_seq: u64,
@@ -264,6 +270,10 @@ pub struct WakuApp {
     pub meta_pending: std::collections::HashSet<String>,
     /// background queue for listing cards (identify only, one request at a time)
     pub meta_queue: Sender<(String, String)>,
+    /// series pages already identified once more by the names in their synopsis
+    pub hint_tried: std::collections::HashSet<String>,
+    /// cards without a picture whose series page was looked at for one
+    pub poster_tried: std::collections::HashSet<String>,
     pub identify: Option<crate::metaui::IdentifyState>,
     pub identify_seq: u64,
 
@@ -306,6 +316,7 @@ impl WakuApp {
         setup(&cc.egui_ctx);
         rmp_egui::install(cc.get_proc_address.clone());
         let settings = Settings::load();
+        let check_on_start = settings.check_updates && !settings.update_repo.trim().is_empty();
         let presence = crate::discord::Presence::start(&settings.discord_app_id);
         i18n::set(Lang::from_code(&settings.language));
         cc.egui_ctx
@@ -321,12 +332,12 @@ impl WakuApp {
         }
         let (tx, rx) = channel();
         {
-            // GitHub: a newer app / newer sources rules — after start-up has settled; old files of an update go
+            // GitHub: a newer app first (the start-up screen waits a few seconds for it), then newer sources
+            // rules; old files of an update go
             crate::update::clean_old();
             let (m, tx, ctx) = (mgr.clone(), tx.clone(), cc.egui_ctx.clone());
             let (repo, app) = (settings.update_repo.clone(), settings.check_updates);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(15));
                 if !repo.trim().is_empty() {
                     if app {
                         let _ = tx.send(Msg::Update { manual: false, res: crate::update::latest_release(m.http(), &repo).map_err(|e| format!("{e:#}")) });
@@ -379,10 +390,12 @@ impl WakuApp {
             hero_idx: 0,
             hero_prev: 0,
             hero_t0: 0.0,
+            hero_shown: 0.0,
             hero_text_h: 300.0,
             logo: None,
             splash_t0: None,
             splash_out: None,
+            splash_conn_t0: None,
             dev: crate::dev::Dev::from_env(),
             search_seq: 0,
             search: Vec::new(),
@@ -396,6 +409,8 @@ impl WakuApp {
             meta: MetaStore::load(),
             meta_pending: Default::default(),
             meta_queue: crate::metaui::start_meta_worker(&cc.egui_ctx, tx_meta),
+            hint_tried: Default::default(),
+            poster_tried: Default::default(),
             identify: None,
             identify_seq: 0,
             sched: HashMap::new(),
@@ -417,7 +432,7 @@ impl WakuApp {
             presence,
             party: None,
             party_ui: Default::default(),
-            upd: Default::default(),
+            upd: crate::update::UpdateState { checking: check_on_start, startup: check_on_start, ..Default::default() },
         };
         for e in app.mgr.load_errors.clone() {
             app.notify(e);
@@ -434,8 +449,15 @@ impl WakuApp {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
-            let m = f(&mgr);
-            let _ = tx.send(m);
+            // a bug in one job must not take the app down (the panic hook has written crash.log)
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mgr))) {
+                Ok(m) => {
+                    let _ = tx.send(m);
+                }
+                Err(_) => {
+                    let _ = tx.send(Msg::Crashed);
+                }
+            }
             ctx.request_repaint();
         });
     }
@@ -990,6 +1012,21 @@ impl WakuApp {
                     }
                 }
                 Msg::Detail { url, res } => {
+                    // cards saved without a picture (Continue Watching, My List) take the page's
+                    if let Ok(data) = &res {
+                        if let Some(p) = &data.poster {
+                            self.lib.fill_poster(&url, p);
+                        }
+                        // a page fetched in the background for a Continue Watching card: its synopsis may name
+                        // the show well enough for AniList (cover, episode titles)
+                        let current = self.detail.as_ref().is_some_and(|d| d.card.url == url);
+                        if !current && self.lib.history.iter().any(|h| h.card.url == url) {
+                            if !data.episodes.is_empty() {
+                                detail_cache_save(&url, data);
+                            }
+                            self.ensure_meta_detail(data);
+                        }
+                    }
                     if let Some(d) = &mut self.detail
                         && d.card.url == url
                     {
@@ -1049,6 +1086,9 @@ impl WakuApp {
                 Msg::Party(w) => self.on_party(w),
                 Msg::Update { manual, res } => self.on_update(manual, res),
                 Msg::Installed(res) => self.on_installed(res),
+                Msg::Crashed => {
+                    self.notify(tr("Something went wrong in the background (saved to crash.log) — try again", "เกิดข้อผิดพลาดเบื้องหลัง (บันทึกไว้ใน crash.log) — ลองใหม่อีกครั้ง").to_string());
+                }
                 Msg::SourcesUpdate { manual, res } => self.on_sources_update(manual, res),
                 Msg::PartyClosed => self.party_closed(),
                 Msg::PartyOpen { detail, ep, pos } => self.party_open(detail, ep, pos),
@@ -1511,11 +1551,23 @@ impl WakuApp {
         let answered = |l: Option<&Listing>| l.is_some_and(|l| l.fresh || l.error.is_some() || (!l.loading && !l.cards.is_empty()));
         let done = ids.iter().filter(|id| answered(self.listings.get(*id))).count();
         let total = ids.len();
-        if self.splash_out.is_none() {
+        // first: is there a newer Waku? (a few seconds at most; a new version is offered right here)
+        let upd_wait = self.upd.startup && self.upd.checking && now - t0 < 4.0;
+        let offer = self.upd.startup
+            && !self.upd.later
+            && !crate::update::dev_build()
+            && self.upd.latest.as_ref().is_some_and(|r| crate::update::is_newer(r.version));
+        let hold = upd_wait || offer;
+        if hold {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        if self.splash_out.is_none() && !hold {
             // (WAKU_SPLASH_SECS keeps it up longer, for looking at it)
             let min = std::env::var("WAKU_SPLASH_SECS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.6);
-            if (done == ids.len() && now - t0 > min) || now - t0 > 20.0f64.max(min) {
+            let since = self.splash_conn_t0.get_or_insert(now).to_owned();
+            if (done == ids.len() && now - t0 > min) || now - since > 20.0f64.max(min) {
                 self.splash_out = Some(now);
+                self.upd.startup = false; // an answer coming later is a toast
             }
         }
         let fade = self.splash_out.map_or(1.0, |t| 1.0 - ((now - t) / 0.45) as f32).clamp(0.0, 1.0);
@@ -1545,7 +1597,16 @@ impl WakuApp {
                 widgets::circle_image(ui.painter(), tex, c, r, Color32::WHITE.gamma_multiply(a));
                 let p = ui.painter();
                 p.text(c + vec2(0.0, r + 34.0), egui::Align2::CENTER_CENTER, "Waku", bold(30.0), TEXT.gamma_multiply(a));
-                p.text(c + vec2(0.0, r + 104.0), egui::Align2::CENTER_CENTER, trf!("Connecting to sources  {done}/{total}", "กำลังเชื่อมต่อแหล่ง  {done}/{total}"), regular(13.0), MUTED.gamma_multiply(a));
+                if offer {
+                    self.splash_offer(ui, c + vec2(0.0, r + 70.0), a);
+                    return;
+                }
+                let status = if upd_wait {
+                    tr("Checking for updates…", "กำลังตรวจหาอัปเดต…").to_string()
+                } else {
+                    trf!("Connecting to sources  {done}/{total}", "กำลังเชื่อมต่อแหล่ง  {done}/{total}")
+                };
+                p.text(c + vec2(0.0, r + 104.0), egui::Align2::CENTER_CENTER, status, regular(13.0), MUTED.gamma_multiply(a));
                 // spinner: an arc that runs round
                 let sc = c + vec2(0.0, r + 78.0);
                 let start = (now * 4.0) as f32;
@@ -1556,7 +1617,7 @@ impl WakuApp {
                 p.add(egui::Shape::line(pts, egui::Stroke::new(2.5, ACCENT_HI.gamma_multiply(a))));
                 // what is loading
                 let mut y = sc.y + 58.0;
-                for (id, name) in &ids {
+                for (id, name) in ids.iter().filter(|_| !upd_wait) {
                     let (txt, col) = match self.listings.get(id) {
                         Some(l) if l.error.is_some() && l.cards.is_empty() => (format!("{}  {name}", icon::X), MUTED),
                         Some(l) if answered(Some(l)) => (format!("{}  {name}", icon::CHECK), TEXT),
@@ -1603,7 +1664,7 @@ fn detail_cache_path(url: &str) -> std::path::PathBuf {
     waku_core::profile::cache_dir().join("detail").join(format!("{:016x}.json", h.finish()))
 }
 
-fn detail_cache_load(url: &str) -> Option<waku_core::AnimeDetail> {
+pub fn detail_cache_load(url: &str) -> Option<waku_core::AnimeDetail> {
     std::fs::read(detail_cache_path(url)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
@@ -1753,6 +1814,7 @@ impl eframe::App for WakuApp {
         self.server_modal(&ctx);
         self.party_ui(&ctx);
         self.identify_modal(&ctx);
+        self.scene_dialog(&ctx);
         self.toast(&ctx);
         self.splash(&splash_ctx);
 

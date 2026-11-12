@@ -17,6 +17,8 @@ pub struct Dev {
     wait_until: Option<Instant>,
     last_poll: Instant,
     pending_shot: Option<String>,
+    /// a file "dragged over the window" until then (`hoverfile SECS`)
+    hover_file: Option<Instant>,
     /// a command for the app itself (page / search), taken by `app.rs`
     pub app_cmd: Option<String>,
 }
@@ -25,7 +27,7 @@ impl Dev {
     pub fn from_env() -> Option<Dev> {
         let dir = PathBuf::from(std::env::var_os("WAKU_DEV_DIR")?);
         let _ = std::fs::create_dir_all(&dir);
-        Some(Dev { dir, queue: VecDeque::new(), wait_until: None, last_poll: Instant::now(), pending_shot: None, app_cmd: None })
+        Some(Dev { dir, queue: VecDeque::new(), wait_until: None, last_poll: Instant::now(), pending_shot: None, hover_file: None, app_cmd: None })
     }
 
     fn log(&self, s: &str) {
@@ -38,6 +40,13 @@ impl Dev {
     /// Called with every frame's input: feeds the next command's events.
     pub fn input(&mut self, ctx: &egui::Context, raw: &mut RawInput) {
         ctx.request_repaint_after(Duration::from_millis(200));
+        if let Some(t) = self.hover_file {
+            if Instant::now() < t {
+                raw.hovered_files.push(egui::HoveredFile { path: Some("picture.png".into()), mime: String::new() });
+            } else {
+                self.hover_file = None;
+            }
+        }
         // finished screenshots arrive as events
         for e in &raw.events {
             if let Event::Screenshot { image, .. } = e
@@ -104,6 +113,18 @@ impl Dev {
                 }
             }
             "text" => raw.events.push(Event::Text(arg)),
+            // `ctrl V`: the key with Ctrl held
+            "ctrl" => {
+                if let Some(k) = Key::from_name(&arg) {
+                    let m = egui::Modifiers::COMMAND;
+                    for pressed in [true, false] {
+                        raw.events.push(Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: m });
+                    }
+                }
+            }
+            "hoverfile" => self.hover_file = Some(Instant::now() + Duration::from_secs_f64(arg.parse().unwrap_or(2.0))),
+            // `drop C:\path\to\picture.png`: a file dropped on the window
+            "drop" => raw.dropped_files.push(std::sync::Arc::new(DevFile(PathBuf::from(arg)))),
             "shot" => {
                 self.pending_shot = Some(if arg.is_empty() { "shot".into() } else { arg });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -111,5 +132,18 @@ impl Dev {
             "quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => self.app_cmd = Some(line),
         }
+    }
+}
+
+/// A file "dropped" by the `drop` command.
+#[derive(Debug)]
+struct DevFile(PathBuf);
+
+impl egui::DroppedFile for DevFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
     }
 }

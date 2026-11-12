@@ -131,6 +131,7 @@ impl WakuApp {
             }
             if self.hero_t0 <= 0.0 || self.hero_t0 > t {
                 self.hero_t0 = t;
+                self.hero_shown = t;
             }
             let hovered = ui.rect_contains_pointer(rect);
             if hovered {
@@ -139,10 +140,16 @@ impl WakuApp {
                 self.hero_prev = self.hero_idx;
                 self.hero_idx = (self.hero_idx + 1) % n;
                 self.hero_t0 = t;
+                self.hero_shown = t;
+            }
+            if self.hero_shown > t {
+                self.hero_shown = 0.0;
             }
             let idx = self.hero_idx;
             let slide_t = (t - self.hero_t0).max(0.0) as f32;
-            let k = (slide_t / 0.6).clamp(0.0, 1.0);
+            // the cross-fade has its own clock: the countdown above stands still under the pointer, the fade
+            // must not (an arrow click would otherwise leave the new slide half-drawn until the mouse moved away)
+            let k = ((t - self.hero_shown).max(0.0) as f32 / 0.6).clamp(0.0, 1.0);
             let fade_in = 1.0 - (1.0 - k).powi(3);
             if fade_in < 1.0 {
                 ui.ctx().request_repaint();
@@ -288,6 +295,7 @@ impl WakuApp {
                 self.hero_prev = idx;
                 self.hero_idx = i;
                 self.hero_t0 = t;
+                self.hero_shown = t;
                 ui.ctx().request_repaint(); // start the cross-fade now, not at the next mouse move
             }
             if act_open {
@@ -489,26 +497,32 @@ impl WakuApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
             }
         }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let label = format!("{}  {}", icon::IMAGE_SQUARE, tr("Search by picture", "ค้นหาด้วยภาพ"));
-            if widgets::ghost_button(ui, &label).on_hover_text(tr("Which anime / episode / moment is this screenshot from?", "ภาพหน้าจอนี้มาจากเรื่องไหน ตอนไหน นาทีไหน?")).clicked() {
-                self.scene.open = !self.scene.open;
+        if bar.image {
+            self.scene.open = true;
+            ui.memory_mut(|m| m.stop_text_input()); // Ctrl+V goes to the dialog, not the search text
+            if !self.scene.busy {
+                self.scene.error = None;
             }
-            if let Some(j) = &self.scene.jump {
-                let ep = j.episode.map(|e| format!("EP {}", waku_core::text::fmt_num(e))).unwrap_or_default();
-                let (name, at) = (j.title_romaji.clone(), crate::scene::mmss(j.at));
+        }
+        if let Some(j) = &self.scene.jump {
+            let ep = j.episode.map(|e| format!("EP {}", waku_core::text::fmt_num(e))).unwrap_or_default();
+            let (name, at) = (j.title_romaji.clone(), crate::scene::mmss(j.at));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(crate::trf!(
-                        "Looking for {name} {ep} at {at} — open it below",
-                        "กำลังหา {name} {ep} นาที {at} — เปิดเรื่องจากผลด้านล่าง"
+                    RichText::new(format!(
+                        "{}  {}",
+                        icon::IMAGE_SQUARE,
+                        crate::trf!("Looking for {name} {ep} at {at} — open it below", "กำลังหา {name} {ep} นาที {at} — เปิดเรื่องจากผลด้านล่าง")
                     ))
                     .color(ACCENT_HI),
                 );
-            }
-        });
-        ui.add_space(10.0);
-        self.scene_panel(ui);
+                if widgets::ghost_button(ui, icon::X).clicked() {
+                    self.scene.jump = None;
+                }
+            });
+        }
+        ui.add_space(18.0);
 
         if self.search_q.is_empty() {
             // shortcuts: what was searched before, and what is being watched

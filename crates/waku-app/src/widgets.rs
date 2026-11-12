@@ -115,6 +115,12 @@ pub fn poster(
         }
         None => {
             let failed = url.is_none_or(|u| images.failed(u));
+            if let Some(u) = url
+                && failed
+                && !images.gave_up(u)
+            {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(8)); // it is tried again
+            }
             if failed {
                 let p = ui.painter();
                 p.rect_filled(rect, CornerRadius::same(radius), PANEL);
@@ -768,6 +774,8 @@ pub struct SearchBar {
     pub submitted: bool,
     /// the text changed this frame
     pub changed: bool,
+    /// the picture button (search by image) was clicked
+    pub image: bool,
 }
 
 /// The big search field: a centred pill with the magnifier inside, a clear button, and an accent ring that
@@ -790,7 +798,9 @@ pub fn search_bar(ui: &mut Ui, text: &mut String, hint: &str, focus: bool) -> Se
     p.rect_filled(rect, CornerRadius::same(255), lerp_color(PANEL, PANEL_HI, f));
     p.rect_stroke(rect, CornerRadius::same(255), Stroke::new(1.0 + f, lerp_color(LINE, ACCENT, f)), StrokeKind::Inside);
     p.text(pos2(rect.min.x + 26.0, rect.center().y), Align2::CENTER_CENTER, icon::MAGNIFYING_GLASS, regular(21.0), lerp_color(MUTED, ACCENT_HI, f));
-    let clear_w = if text.is_empty() { 16.0 } else { 46.0 };
+    // right side: [x clear] [picture search]
+    let img_c = pos2(rect.max.x - 30.0, rect.center().y);
+    let clear_w = if text.is_empty() { 58.0 } else { 96.0 };
     let inner = Rect::from_min_max(pos2(rect.min.x + 50.0, rect.min.y + 6.0), pos2(rect.max.x - clear_w, rect.max.y - 6.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let r = child.add(
@@ -807,8 +817,17 @@ pub fn search_bar(ui: &mut Ui, text: &mut String, hint: &str, focus: bool) -> Se
     }
     let submitted = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     let mut changed = r.changed();
+    let ir = ui
+        .interact(Rect::from_center_size(img_c, vec2(38.0, 38.0)), id.with("image"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(crate::i18n::tr("Search by picture — which anime / episode / moment is a screenshot from?", "ค้นหาด้วยภาพ — ภาพหน้าจอนี้มาจากเรื่องไหน ตอนไหน นาทีไหน"));
+    let ihv = ui.ctx().animate_bool_with_time(id.with("image_h"), ir.hovered(), 0.12);
+    ui.painter().circle_filled(img_c, 17.0, CARD_HI.gamma_multiply(ihv));
+    ui.painter().text(img_c, Align2::CENTER_CENTER, icon::IMAGE_SQUARE, regular(21.0), lerp_color(MUTED, ACCENT_HI, ihv.max(f * 0.4)));
     if !text.is_empty() {
-        let c = pos2(rect.max.x - 28.0, rect.center().y);
+        // a thin divider between the clear button and the picture button
+        ui.painter().vline(img_c.x - 24.0, rect.center().y - 12.0..=rect.center().y + 12.0, Stroke::new(1.0, LINE));
+        let c = pos2(rect.max.x - 72.0, rect.center().y);
         let cr = ui.interact(Rect::from_center_size(c, vec2(32.0, 32.0)), id.with("clear"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
         let hv = ui.ctx().animate_bool_with_time(id.with("clear_h"), cr.hovered(), 0.12);
         ui.painter().circle_filled(c, 14.0, CARD_HI.gamma_multiply(hv));
@@ -819,7 +838,7 @@ pub fn search_bar(ui: &mut Ui, text: &mut String, hint: &str, focus: bool) -> Se
             ui.memory_mut(|m| m.request_focus(edit_id));
         }
     }
-    SearchBar { submitted, changed }
+    SearchBar { submitted, changed, image: ir.clicked() }
 }
 
 /// Small rounded shortcut button with an icon ("recent search" chips).

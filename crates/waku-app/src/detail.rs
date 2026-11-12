@@ -15,7 +15,8 @@ use waku_core::text::{fmt_num, truncate};
 use waku_core::{AnimeCard, AnimeDetail, Episode, StreamRank};
 
 const PAD: f32 = 36.0;
-const HERO_H: f32 = 440.0;
+/// the shortest the hero gets (it grows with its text)
+const HERO_H: f32 = 330.0;
 
 enum Act {
     Play(Episode),
@@ -382,7 +383,7 @@ impl WakuApp {
             }
         }
 
-        let need = (h.min_rect().max.y - hero.min.y + 36.0).max(HERO_H);
+        let need = (h.min_rect().max.y - hero.min.y + 30.0).max(HERO_H);
         if (need - hero_h).abs() > 1.0 {
             ui.ctx().data_mut(|d| d.insert_temp(hero_id, need));
             ui.ctx().request_repaint();
@@ -539,6 +540,8 @@ impl WakuApp {
         let season = sel
             .filter(|s| seasons.iter().any(|x| x.0 == *s))
             .unwrap_or(seasons[0].0);
+        let names = self.season_names(m, &seasons.iter().map(|x| x.0).collect::<Vec<_>>());
+        let row_h = if names.is_empty() { 62.0 } else { 80.0 };
         let src_name = self.source_name(&d.source);
         let sub = if track { i18n::tag("Dub") } else { i18n::tag("Sub") };
         // the episode the user watched last: exact URL first, else same number on the same track
@@ -567,7 +570,7 @@ impl WakuApp {
                             ui.set_width(col_w);
                             for (i, (s, n)) in seasons.iter().enumerate() {
                                 let (r, resp) =
-                                    ui.allocate_exact_size(vec2(col_w, 62.0), Sense::click());
+                                    ui.allocate_exact_size(vec2(col_w, row_h), Sense::click());
                                 let active = *s == season;
                                 let p = ui.painter();
                                 if active {
@@ -589,8 +592,22 @@ impl WakuApp {
                                     bold(15.0),
                                     TEXT,
                                 );
+                                let mut y = 42.0;
+                                if let Some(n) = names.get(s) {
+                                    // the season's own name (from AniList), cut to the column
+                                    let g = p.layout(n.clone(), regular(13.0), if active { ACCENT_HI } else { TEXT }, col_w - 30.0);
+                                    let g = if g.rows.len() > 1 {
+                                        let mut cut: String = n.chars().take(26).collect();
+                                        cut.push('…');
+                                        p.layout_no_wrap(cut, regular(13.0), if active { ACCENT_HI } else { TEXT })
+                                    } else {
+                                        g
+                                    };
+                                    p.galley(r.min + vec2(18.0, 33.0), g, TEXT);
+                                    y = 62.0;
+                                }
                                 p.text(
-                                    r.min + vec2(18.0, 42.0),
+                                    r.min + vec2(18.0, y),
                                     egui::Align2::LEFT_CENTER,
                                     en,
                                     regular(12.5),

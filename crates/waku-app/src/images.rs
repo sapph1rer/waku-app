@@ -16,11 +16,17 @@ const MAX_H: u32 = 420;
 enum Slot {
     Loading,
     Ready(TextureHandle),
-    Failed,
+    /// when it failed, and how many times: tried again a little later (a blip of the network, a site
+    /// that was busy) — up to `RETRIES` times
+    Failed(std::time::Instant, u32),
 }
+
+const RETRIES: u32 = 3;
 
 pub struct Images {
     slots: HashMap<String, Slot>,
+    /// failures so far of the images being tried again
+    tries: HashMap<String, u32>,
     req: Sender<(String, String)>,
     done: Receiver<(String, Result<ColorImage, String>)>,
 }
@@ -95,6 +101,7 @@ impl Images {
         }
         Self {
             slots: HashMap::new(),
+            tries: HashMap::new(),
             req: req_tx,
             done: done_rx,
         }
@@ -102,7 +109,15 @@ impl Images {
 
     /// Texture for `url`, starting a download the first time it is asked for.
     pub fn get(&mut self, url: &str, referer: &str) -> Option<&TextureHandle> {
-        if !self.slots.contains_key(url) {
+        let again = match self.slots.get(url) {
+            None => true,
+            Some(Slot::Failed(at, n)) => *n < RETRIES && at.elapsed().as_secs() >= 8 * *n as u64,
+            _ => false,
+        };
+        if again {
+            if let Some(Slot::Failed(_, n)) = self.slots.get(url) {
+                self.tries.insert(url.to_string(), *n);
+            }
             self.slots.insert(url.to_string(), Slot::Loading);
             let _ = self.req.send((url.to_string(), referer.to_string()));
             return None;
@@ -118,8 +133,14 @@ impl Images {
         self.get(&format!("{BLUR}{url}"), referer)
     }
 
+    /// It failed (and is not being tried again right now).
     pub fn failed(&self, url: &str) -> bool {
-        matches!(self.slots.get(url), Some(Slot::Failed))
+        matches!(self.slots.get(url), Some(Slot::Failed(..)))
+    }
+
+    /// It failed for good (every retry used up).
+    pub fn gave_up(&self, url: &str) -> bool {
+        matches!(self.slots.get(url), Some(Slot::Failed(_, n)) if *n >= RETRIES)
     }
 
     /// Move finished downloads into textures (call once per frame).
@@ -127,7 +148,7 @@ impl Images {
         while let Ok((url, res)) = self.done.try_recv() {
             let slot = match res {
                 Ok(img) => Slot::Ready(ctx.load_texture(url.clone(), img, TextureOptions::LINEAR)),
-                Err(_) => Slot::Failed,
+                Err(_) => Slot::Failed(std::time::Instant::now(), self.tries.remove(&url).unwrap_or(0) + 1),
             };
             self.slots.insert(url, slot);
         }

@@ -71,6 +71,54 @@ impl WakuApp {
             .fold(None, |a: Option<f32>, n| Some(a.map_or(n, |a| a.max(n))))
     }
 
+    /// Start loading the franchise of an AniList show (from disk, else AniList) unless it is known.
+    pub fn ensure_order(&mut self, id: u64) {
+        if !self.orders.contains_key(&id) {
+            match load(id) {
+                Some(v) => {
+                    self.orders.insert(id, Some(Ok(v)));
+                }
+                None => {
+                    self.orders.insert(id, None);
+                    self.spawn(move |mgr| Msg::Order(id, waku_core::meta::anilist::watch_order(mgr.http(), id).map_err(|e| format!("{e:#}"))));
+                }
+            }
+        }
+    }
+
+    /// Names for a page's seasons (1, 2, …): the TV seasons of the franchise in air order, when AniList knows
+    /// as many as the page has (a page with one season is the show itself).
+    pub fn season_names(&mut self, m: Option<&AnimeMeta>, seasons: &[u32]) -> std::collections::HashMap<u32, String> {
+        let mut out = std::collections::HashMap::new();
+        let Some(m) = m.filter(|m| m.matched) else { return out };
+        let english = self.settings.language != "th";
+        let name = |mm: &AnimeMeta| if english { mm.title_english.clone().or(mm.title_romaji.clone()) } else { mm.title_romaji.clone().or(mm.title_english.clone()) };
+        if seasons.len() <= 1 {
+            if let (Some(s), Some(n)) = (seasons.first(), name(m)) {
+                out.insert(*s, n);
+            }
+            return out;
+        }
+        let Some(id) = m.anilist_id else { return out };
+        self.ensure_order(id);
+        let Some(Some(Ok(items))) = self.orders.get(&id) else { return out };
+        let tv: Vec<&AnimeMeta> = items
+            .iter()
+            .filter(|x| x.main && matches!(x.meta.format.as_deref(), Some("TV") | Some("TV_SHORT") | Some("ONA")))
+            .map(|x| &x.meta)
+            .collect();
+        // season n is the n-th TV entry; a page numbering more seasons than AniList has gets no names
+        if seasons.iter().any(|s| *s == 0 || *s as usize > tv.len()) {
+            return out;
+        }
+        for s in seasons {
+            if let Some(n) = name(tv[*s as usize - 1]) {
+                out.insert(*s, n);
+            }
+        }
+        out
+    }
+
     pub fn order_tab(&mut self, ui: &mut Ui, m: Option<&AnimeMeta>) {
         let Some(id) = m.and_then(|m| m.anilist_id) else {
             widgets::empty(
@@ -83,17 +131,7 @@ impl WakuApp {
             );
             return;
         };
-        if !self.orders.contains_key(&id) {
-            match load(id) {
-                Some(v) => {
-                    self.orders.insert(id, Some(Ok(v)));
-                }
-                None => {
-                    self.orders.insert(id, None);
-                    self.spawn(move |mgr| Msg::Order(id, waku_core::meta::anilist::watch_order(mgr.http(), id).map_err(|e| format!("{e:#}"))));
-                }
-            }
-        }
+        self.ensure_order(id);
         let items = match self.orders.get(&id) {
             Some(Some(Ok(v))) => v.clone(),
             Some(Some(Err(e))) => {
