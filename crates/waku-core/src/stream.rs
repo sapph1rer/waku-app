@@ -337,7 +337,8 @@ pub fn pick_variant<'a>(vs: &'a [Variant], want: &str) -> &'a Variant {
     let w = w.trim_end_matches('p');
     let known = || vs.iter().filter(|v| v.height.is_some());
     match w {
-        "" | "best" | "auto" | "max" => &vs[0],
+        // the sharpest one (sites do not always list them best-first)
+        "" | "best" | "auto" | "max" => known().max_by_key(|v| v.height.unwrap_or(0)).unwrap_or(&vs[0]),
         "worst" | "min" | "low" => known().next_back().unwrap_or(&vs[0]),
         n => match n.parse::<u32>() {
             Ok(h) => known()

@@ -9,6 +9,17 @@
 
 mod app;
 mod detail;
+mod dev;
+mod dlpage;
+mod srcpage;
+mod scene;
+mod discover;
+mod order;
+mod discord;
+mod party;
+mod relay;
+mod update;
+mod download;
 mod i18n;
 mod images;
 mod metaui;
@@ -80,6 +91,8 @@ fn console_mode(args: &[String]) -> Option<i32> {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // waku-browser.exe next to waku.exe: Cloudflare checks and obfuscated players go through it
+    waku_core::browser::install();
     if let Some(code) = console_mode(&args) {
         std::process::exit(code);
     }
@@ -101,27 +114,11 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Small orange play-button icon drawn in code (no asset files needed).
+/// The app's logo (assets/icon.png: the picture with rounded corners) for the window and taskbar.
 fn app_icon() -> egui::IconData {
-    let n = 64usize;
-    let mut rgba = vec![0u8; n * n * 4];
-    let c = (n as f32 - 1.0) / 2.0;
-    for y in 0..n {
-        for x in 0..n {
-            let (fx, fy) = (x as f32 - c, y as f32 - c);
-            let d = (fx * fx + fy * fy).sqrt();
-            let i = (y * n + x) * 4;
-            if d <= c {
-                // play triangle
-                let tri = fx > -9.0 && fx < 14.0 && fy.abs() < (14.0 - fx) * 0.62;
-                let (r, g, b) = if tri { (0, 0, 0) } else { (0xf4, 0x75, 0x21) };
-                rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
-            }
-        }
-    }
-    egui::IconData {
-        rgba,
-        width: n as u32,
-        height: n as u32,
+    let img = image::load_from_memory(include_bytes!("../assets/icon.png")).map(|i| i.to_rgba8());
+    match img {
+        Ok(i) => egui::IconData { width: i.width(), height: i.height(), rgba: i.into_raw() },
+        Err(_) => egui::IconData::default(),
     }
 }

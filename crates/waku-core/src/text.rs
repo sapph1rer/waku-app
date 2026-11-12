@@ -88,7 +88,7 @@ pub fn percent_decode(s: &str) -> String {
     while i < b.len() {
         if b[i] == b'%'
             && i + 2 < b.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             out.push(v);
             i += 3;
@@ -267,9 +267,37 @@ pub fn season_of(title: &str) -> Option<u32> {
     c.get(1).or(c.get(2))?.as_str().parse().ok()
 }
 
+/// Do two site titles name the same show (and the same season)? Sites write titles differently
+/// ("Black Clover Season 2 แบล็คโคลเวอร์ ซีซั่น 2" / "Black Clover 2 แบล็คโคลเวอร์ (ภาค2)"), so this compares
+/// the normalised names loosely and then insists on the same season number.
+pub fn same_show(a: &str, b: &str) -> bool {
+    if norm(a) == norm(b) {
+        return true;
+    }
+    // a bare trailing number after the Latin name is a season too ("Black Clover 2 …")
+    let season = |t: &str| {
+        season_of(t).or_else(|| {
+            static RE: OnceLock<Regex> = OnceLock::new();
+            let re = RE.get_or_init(|| Regex::new(r"^[\x00-\x7F]*?[A-Za-z]\s+(\d)\b(?:\s|$)").unwrap());
+            re.captures(t).and_then(|c| c[1].parse().ok())
+        })
+    };
+    season(a).unwrap_or(1) == season(b).unwrap_or(1) && title_similarity(a, b) >= 0.62
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_show_across_sites() {
+        assert!(same_show("Black Clover Season 2 แบล็คโคลเวอร์ ซีซั่น 2", "Black Clover 2 แบล็คโคลเวอร์ (ภาค2)"));
+        assert!(same_show("Black Clover Season 2 แบล็คโคลเวอร์ ซีซั่น 2", "Black Clover Season 2 แบล็กโคลเวอร์ (ภาค2)"));
+        assert!(!same_show("Black Clover Season 1 (2017) แบล็คโคลเวอร์ ซีซั่น 1", "Black Clover Season 2 แบล็คโคลเวอร์ ซีซั่น 2"));
+        assert!(same_show("Psyren ไซเรน", "PSYЯEN") || !same_show("Psyren ไซเรน", "Gensou Suikoden"));
+        assert!(!same_show("Psyren ไซเรน", "Gensou Suikoden เก็นโซซุยโคเด็น"));
+        assert!(same_show("Gensou Suikoden", "Gensou Suikoden เก็นโซซุยโคเด็น"));
+    }
 
     #[test]
     fn episodes() {
@@ -301,5 +329,30 @@ mod tests {
             abs("https://a.com/x/", "//cdn.b.com/i.jpg").unwrap(),
             "https://cdn.b.com/i.jpg"
         );
+    }
+}
+
+/// Remove HTML that a site left in plain text (`<img src=…>`, `<br>` …: escaped markup in descriptions) and
+/// tidy the blank lines it leaves behind.
+pub fn strip_tags(s: &str) -> String {
+    static TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = TAG.get_or_init(|| regex::Regex::new(r"(?s)<\s*/?\s*[a-zA-Z][^>]*>").unwrap());
+    let t = re.replace_all(s, " ");
+    let mut out: Vec<String> = Vec::new();
+    for para in t.split("\n\n") {
+        let p = para.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !p.is_empty() {
+            out.push(p);
+        }
+    }
+    out.join("\n\n")
+}
+
+#[cfg(test)]
+mod strip_tests {
+    #[test]
+    fn strips_img() {
+        let s = "เรื่องย่อ ดี\n\n<img src='//x/a.jpg' alt='t'><img src='//x/b.jpg' alt='u'>";
+        assert_eq!(super::strip_tags(s), "เรื่องย่อ ดี");
     }
 }

@@ -6,6 +6,9 @@
 //! by hand (manual matches are never replaced automatically).
 
 pub mod anilist;
+pub mod anizip;
+pub mod aniskip;
+pub mod tracemoe;
 pub mod jikan;
 pub mod kitsu;
 
@@ -30,6 +33,9 @@ pub struct EpMeta {
     pub length: Option<u32>,
     /// anilist | kitsu | jikan
     pub source: String,
+    /// what happens in the episode (ani.zip / Kitsu, English)
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -44,6 +50,10 @@ pub struct AnimeMeta {
     pub kitsu_id: Option<String>,
     /// episode titles / thumbnails were fetched
     pub enriched: bool,
+    /// ani.zip was asked too (older cache entries were enriched without it)
+    pub anizip: bool,
+    /// version of the episode data (2 = with summaries); older entries are fetched again
+    pub eps_rev: u32,
     pub title_romaji: Option<String>,
     pub title_english: Option<String>,
     pub title_native: Option<String>,
@@ -63,6 +73,8 @@ pub struct AnimeMeta {
     /// minutes per episode
     pub duration: Option<u32>,
     pub year: Option<u32>,
+    /// first air date as yyyymmdd (missing parts 0), for ordering seasons / movies
+    pub start: Option<u32>,
     /// WINTER | SPRING | SUMMER | FALL
     pub season: Option<String>,
     pub score: Option<u32>,
@@ -292,6 +304,10 @@ pub fn match_score(query: &str, cand: &AnimeMeta, local_eps: u32) -> f64 {
             best -= 0.05; // more episodes than the show has: probably another season
         }
     }
+    // a page with episodes is not a show that has not started yet ("Frieren 3rd Season" vs season 1)
+    if cand.status.as_deref() == Some("NOT_YET_RELEASED") {
+        best -= if local_eps > 0 { 0.3 } else { 0.08 };
+    }
     best
 }
 
@@ -302,9 +318,15 @@ pub fn pick_best(query: &str, cands: Vec<AnimeMeta>, local_eps: u32) -> Option<A
         .into_iter()
         .map(|c| (match_score(query, &c, local_eps), c))
         .filter(|(s, _)| *s >= MIN_SCORE)
-        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        // ties keep AniList's order (its first hit is the most relevant)
+        .fold(None::<(f64, AnimeMeta)>, |best, x| match best {
+            Some(b) if b.0 >= x.0 => Some(b),
+            _ => Some(x),
+        })
         .map(|(_, c)| c)
 }
+
+pub const EPS_REV: u32 = 2;
 
 /// First non-empty title wins, in the order of `layers` (best first).
 pub fn merge_eps(layers: Vec<Vec<EpMeta>>) -> Vec<EpMeta> {
@@ -327,6 +349,9 @@ pub fn merge_eps(layers: Vec<Vec<EpMeta>>) -> Vec<EpMeta> {
             }
             if slot.length.is_none() {
                 slot.length = e.length;
+            }
+            if slot.summary.is_none() {
+                slot.summary = e.summary.clone();
             }
         }
     }
@@ -387,33 +412,59 @@ pub fn parse_anilist_id(s: &str) -> Option<u64> {
 /// Episode titles, thumbnails and air dates: Kitsu (pictures), then Jikan where titles are missing,
 /// then AniList's own streaming episodes. Failures are kept as notes; the show data stays.
 pub fn enrich(http: &Http, mut m: AnimeMeta) -> AnimeMeta {
-    let mut notes = vec![];
-    let mut kitsu_eps = vec![];
-    if m.kitsu_id.is_none() {
-        match kitsu::find_id(http, m.anilist_id, m.mal_id) {
-            Ok(id) => m.kitsu_id = id,
-            Err(e) => notes.push(format!("Kitsu: {e:#}")),
+    // ani.zip and Kitsu side by side (each a few hundred ms); Jikan only when neither has titles, and not at all
+    // once it has failed to answer in this session (on some networks it never connects: 10 s lost each time)
+    let (anilist, mal, kitsu_known) = (m.anilist_id, m.mal_id, m.kitsu_id.clone());
+    let (az, (kid, kitsu_eps, mut notes)) = std::thread::scope(|sc| {
+        let az = sc.spawn(|| anizip::episodes(http, anilist, mal));
+        let mut notes = vec![];
+        let mut kid = kitsu_known;
+        if kid.is_none() {
+            match kitsu::find_id(http, anilist, mal) {
+                Ok(id) => kid = id,
+                Err(e) => notes.push(format!("Kitsu: {e:#}")),
+            }
         }
-    }
-    if let Some(id) = m.kitsu_id.clone() {
-        match kitsu::episodes(http, &id) {
-            Ok(v) => kitsu_eps = v,
-            Err(e) => notes.push(format!("Kitsu: {e:#}")),
+        let mut keps = vec![];
+        if let Some(id) = kid.clone() {
+            match kitsu::episodes(http, &id) {
+                Ok(v) => keps = v,
+                Err(e) => notes.push(format!("Kitsu: {e:#}")),
+            }
         }
-    }
+        (az.join().unwrap_or_else(|_| Ok(Vec::new())), (kid, keps, notes))
+    });
+    m.kitsu_id = kid;
+    let az_eps = match az {
+        Ok(v) => v,
+        Err(e) => {
+            notes.push(format!("ani.zip: {e:#}"));
+            Vec::new()
+        }
+    };
+    static JIKAN_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let has_titles = |v: &[EpMeta]| !v.is_empty() && v.iter().all(|e| !e.title.is_empty());
     let mut jk = vec![];
-    if (kitsu_eps.is_empty() || kitsu_eps.iter().any(|e| e.title.is_empty()))
+    if !has_titles(&az_eps) && !has_titles(&kitsu_eps) && !JIKAN_DOWN.load(std::sync::atomic::Ordering::Relaxed)
         && let Some(mal) = m.mal_id
     {
         match jikan::episodes(http, mal) {
             Ok(v) => jk = v,
-            Err(e) => notes.push(format!("Jikan: {e:#}")),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if msg.contains("timed out") || msg.contains("Connect") {
+                    JIKAN_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                notes.push(format!("Jikan: {msg}"));
+            }
         }
     }
     let own = std::mem::take(&mut m.eps);
-    // AniList streaming titles first (official English), Kitsu for pictures/dates, Jikan as a fallback
-    m.eps = merge_eps(vec![own, kitsu_eps, jk]);
-    m.enriched = notes.is_empty() || !m.eps.is_empty();
+    // AniList streaming titles first (official English), then ani.zip (TVDB/TMDB titles, pictures), Kitsu, Jikan
+    m.eps = merge_eps(vec![own, az_eps, kitsu_eps, jk]);
+    m.enriched = notes.is_empty() || m.eps.iter().any(|e| !e.title.is_empty());
+    m.anizip = true;
+    m.eps_rev = EPS_REV;
     m.notes = notes;
     m
 }

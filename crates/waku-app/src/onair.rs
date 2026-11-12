@@ -428,7 +428,7 @@ impl WakuApp {
             tc,
         );
         let (sl, sc) = match st {
-            AirState::OnAir => (format!("● {}", tr("ON AIR", "กำลังฉาย")), ACCENT_HI),
+            AirState::OnAir => (format!("{} {}", icon::BROADCAST, tr("ON AIR", "กำลังฉาย")), ACCENT_HI),
             AirState::Unaired => {
                 let eta = i18n::fmt_eta(it.at as i64 - now as i64);
                 (trf!("in {eta}", "อีก {eta}"), Color32::from_gray(200))
@@ -500,7 +500,7 @@ impl WakuApp {
             info.push(trf!("{d} min", "{d} นาที"));
         }
         if let Some(s) = it.score {
-            info.push(format!("★ {s}%"));
+            info.push(format!("{} {s}%", icon::STAR));
         }
         if it.adult {
             info.push("18+".into());

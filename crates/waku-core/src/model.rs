@@ -21,13 +21,18 @@ pub struct Episode {
     pub num: f32,
     pub label: String,
     pub url: String,
+    /// Thai dub (พากย์ไทย) rather than subtitles
+    #[serde(default)]
+    pub dub: bool,
 }
 
 impl Episode {
     /// Same episode on another source? (season is ignored when either side
     /// only has one season, because sites number seasons differently)
     pub fn same_as(&self, other: &Episode, both_single_season: bool) -> bool {
-        (self.num - other.num).abs() < 0.01 && (both_single_season || self.season == other.season)
+        (self.num - other.num).abs() < 0.01
+            && self.dub == other.dub
+            && (both_single_season || self.season == other.season)
     }
 }
 
@@ -105,6 +110,12 @@ pub struct Stream {
     /// Page the stream was found on (used for Referer).
     pub page: String,
     pub rank: StreamRank,
+    /// Extra request headers the video host checks ("Origin: …").
+    #[serde(default)]
+    pub headers: Vec<String>,
+    /// The variants are HLS (possibly disguised: `.txt` names, JSON playlists, image-named segments).
+    #[serde(default)]
+    pub hls: bool,
 }
 
 impl Stream {

@@ -17,7 +17,7 @@ fn url() -> String {
 const GAP: Duration = Duration::from_millis(700);
 
 const FIELDS: &str = "id idMal title { romaji english native } synonyms description(asHtml: false) format duration status episodes \
-    nextAiringEpisode { episode airingAt } startDate { year } season averageScore genres coverImage { extraLarge large color } bannerImage \
+    nextAiringEpisode { episode airingAt } startDate { year month day } season averageScore genres coverImage { extraLarge large color } bannerImage \
     studios(isMain: true) { nodes { name } } streamingEpisodes { title thumbnail } isAdult";
 
 fn post(http: &Http, q: &str, vars: Value) -> Result<Value> {
@@ -32,6 +32,125 @@ pub fn search(http: &Http, query: &str) -> Result<Vec<AnimeMeta>> {
         "query ($s: String) {{ Page(perPage: 10) {{ media(search: $s, type: ANIME) {{ {FIELDS} }} }} }}"
     );
     parse_page(&post(http, &q, json!({ "s": query }))?)
+}
+
+/// What to list on Browse › Discover.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Discover {
+    pub search: String,
+    pub genres: Vec<String>,
+    pub year: Option<u32>,
+    /// WINTER | SPRING | SUMMER | FALL
+    pub season: Option<String>,
+    /// TV | MOVIE | OVA | ONA | SPECIAL | TV_SHORT
+    pub formats: Vec<String>,
+    /// RELEASING | FINISHED | NOT_YET_RELEASED
+    pub status: Option<String>,
+    /// POPULARITY_DESC | TRENDING_DESC | SCORE_DESC | START_DATE_DESC | FAVOURITES_DESC
+    pub sort: String,
+    pub min_score: Option<u32>,
+}
+
+pub const GENRES: [&str; 18] = [
+    "Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery",
+    "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller",
+];
+
+/// One page (30) of AniList anime matching `f`; second value: there are more pages.
+pub fn discover(http: &Http, f: &Discover, page: u32) -> Result<(Vec<AnimeMeta>, bool)> {
+    let q = format!(
+        "query ($p: Int, $s: String, $g: [String], $y: Int, $se: MediaSeason, $f: [MediaFormat], $st: MediaStatus, $so: [MediaSort], $sc: Int) {{ \
+         Page(page: $p, perPage: 30) {{ pageInfo {{ hasNextPage }} media(type: ANIME, isAdult: false, search: $s, genre_in: $g, seasonYear: $y, \
+         season: $se, format_in: $f, status: $st, sort: $so, averageScore_greater: $sc) {{ {FIELDS} }} }} }}"
+    );
+    let mut vars = serde_json::Map::new();
+    vars.insert("p".into(), json!(page.max(1)));
+    if !f.search.trim().is_empty() {
+        vars.insert("s".into(), json!(f.search.trim()));
+    }
+    if !f.genres.is_empty() {
+        vars.insert("g".into(), json!(f.genres));
+    }
+    if let Some(y) = f.year {
+        vars.insert("y".into(), json!(y));
+    }
+    if let Some(se) = &f.season {
+        vars.insert("se".into(), json!(se));
+    }
+    if !f.formats.is_empty() {
+        vars.insert("f".into(), json!(f.formats));
+    }
+    if let Some(st) = &f.status {
+        vars.insert("st".into(), json!(st));
+    }
+    let sort = if f.sort.is_empty() { "POPULARITY_DESC" } else { f.sort.as_str() };
+    // a text search is best ranked by relevance
+    let sort = if f.search.trim().is_empty() { vec![sort] } else { vec!["SEARCH_MATCH", sort] };
+    vars.insert("so".into(), json!(sort));
+    if let Some(sc) = f.min_score {
+        vars.insert("sc".into(), json!(sc));
+    }
+    let v = post(http, &q, Value::Object(vars))?;
+    let more = v.pointer("/data/Page/pageInfo/hasNextPage").and_then(|x| x.as_bool()).unwrap_or(false);
+    Ok((parse_page(&v)?, more))
+}
+
+/// One entry of a franchise's watch order.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OrderItem {
+    pub meta: AnimeMeta,
+    /// how AniList relates it to the show it was reached from (SEQUEL, SIDE_STORY …)
+    pub relation: String,
+    /// part of the main story (TV / movie / ONA sequels and prequels), not a side story or recap
+    pub main: bool,
+}
+
+const REL_FIELDS: &str = "relations { edges { relationType node { id type format startDate { year month day } } } }";
+
+/// The whole franchise around `id` (prequels, sequels, movies, OVAs, side stories), in air-date order.
+pub fn watch_order(http: &Http, id: u64) -> Result<Vec<OrderItem>> {
+    use std::collections::{HashMap, VecDeque};
+    let q = format!("query ($id: Int) {{ Media(id: $id, type: ANIME) {{ {FIELDS} {REL_FIELDS} }} }}");
+    let mut seen: HashMap<u64, (AnimeMeta, String, bool)> = HashMap::new();
+    let mut queue: VecDeque<(u64, String, bool)> = VecDeque::from([(id, "SOURCE".to_string(), true)]);
+    let mut asked = 0;
+    while let Some((cur, rel, main)) = queue.pop_front() {
+        if seen.contains_key(&cur) {
+            continue;
+        }
+        if asked >= 16 {
+            break; // long franchises: enough for a list (AniList allows ~90 requests a minute)
+        }
+        asked += 1;
+        let v = post(http, &q, json!({ "id": cur }))?;
+        let Some(m) = v.pointer("/data/Media") else { continue };
+        let meta = parse_media(m);
+        seen.insert(cur, (meta, rel.clone(), main));
+        for e in m.pointer("/relations/edges").and_then(|x| x.as_array()).into_iter().flatten() {
+            let rt = e["relationType"].as_str().unwrap_or("");
+            let node = &e["node"];
+            if node["type"].as_str() != Some("ANIME") {
+                continue;
+            }
+            let Some(nid) = node["id"].as_u64() else { continue };
+            if seen.contains_key(&nid) {
+                continue;
+            }
+            let fmt = node["format"].as_str().unwrap_or("");
+            // follow the story: prequels / sequels everywhere, side stories and the parent from the main line
+            let (follow, is_main) = match rt {
+                "PREQUEL" | "SEQUEL" => (true, main && matches!(fmt, "TV" | "TV_SHORT" | "MOVIE" | "ONA")),
+                "PARENT" | "SIDE_STORY" | "ALTERNATIVE" | "SPIN_OFF" if main => (rt != "SPIN_OFF" || fmt == "MOVIE", false),
+                _ => (false, false),
+            };
+            if follow && fmt != "MUSIC" {
+                queue.push_back((nid, rt.to_string(), is_main));
+            }
+        }
+    }
+    let mut out: Vec<OrderItem> = seen.into_values().map(|(meta, relation, main)| OrderItem { meta, relation, main }).collect();
+    out.sort_by_key(|x| (x.meta.start.unwrap_or(u32::MAX), x.meta.anilist_id.unwrap_or(0)));
+    Ok(out)
 }
 
 pub fn by_id(http: &Http, id: u64) -> Result<AnimeMeta> {
@@ -187,6 +306,7 @@ pub fn parse_media(m: &Value) -> AnimeMeta {
         format: s(m, "/format"),
         duration: n(m, "/duration").map(|x| x as u32),
         year: n(m, "/startDate/year").map(|x| x as u32),
+        start: n(m, "/startDate/year").map(|y| y as u32 * 10_000 + n(m, "/startDate/month").unwrap_or(0) as u32 * 100 + n(m, "/startDate/day").unwrap_or(0) as u32),
         season: s(m, "/season"),
         score: n(m, "/averageScore").map(|x| x as u32),
         studio: m
@@ -215,6 +335,7 @@ pub fn parse_media(m: &Value) -> AnimeMeta {
                 aired: None,
                 length: None,
                 source: "anilist".into(),
+                summary: None,
             });
         }
     }

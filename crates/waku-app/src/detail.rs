@@ -20,10 +20,13 @@ const HERO_H: f32 = 440.0;
 enum Act {
     Play(Episode),
     Pick(Episode),
+    Download(Episode),
+    DownloadAll(Vec<Episode>),
     Open(AnimeCard),
     ToggleList,
     Tab(Tab),
     Season(u32),
+    Track(bool),
     Sort,
     Back,
     SearchElsewhere,
@@ -45,7 +48,7 @@ impl WakuApp {
         };
         let card = st.card.clone();
         let data: Option<Result<AnimeDetail, String>> = st.data.clone();
-        let (tab, sel_season, newest_first) = (st.tab, st.season, st.newest_first);
+        let (tab, sel_season, newest_first, sel_dub) = (st.tab, st.season, st.newest_first, st.dub);
         let mut act: Option<Act> = None;
 
         let referer = self.referer(&card.source);
@@ -69,10 +72,31 @@ impl WakuApp {
             .as_ref()
             .and_then(|d| d.as_ref().ok())
             .and_then(|d| self.lib.last_watched(&d.url, &d.title).cloned());
+        // which track (Sub / Dub) the episode list shows
+        let (has_sub, has_dub) = data
+            .as_ref()
+            .and_then(|d| d.as_ref().ok())
+            .map_or((true, false), |d| (d.episodes.iter().any(|e| !e.dub), d.episodes.iter().any(|e| e.dub)));
+        let last_dub = last.as_ref().map(|h| {
+            data.as_ref()
+                .and_then(|d| d.as_ref().ok())
+                .and_then(|d| d.episodes.iter().find(|e| e.url == h.ep_url))
+                .map_or(h.dub, |e| e.dub)
+        });
+        let track = match sel_dub.or(last_dub) {
+            Some(true) if has_dub => true,
+            Some(false) if has_sub => false,
+            _ => !has_sub,
+        };
 
         // ---------------------------------------------------------- hero
         let w = ui.available_width();
-        let (hero, _) = ui.allocate_exact_size(vec2(w, HERO_H), Sense::hover());
+        // the hero grows with its text (long titles, wrapped badges, Thai synopsis): last frame's measured
+        // height is used so buttons never spill over the tabs below
+        let hero_id = ui.id().with("hero_h");
+        let measured: f32 = ui.ctx().data(|d| d.get_temp(hero_id)).unwrap_or(HERO_H);
+        let hero_h = measured.max(HERO_H);
+        let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
         backdrop(ui, &mut self.images, art.as_deref(), &referer, hero);
         let hero_resp = ui.interact(hero, ui.id().with("hero"), Sense::click());
         let mut card_act = None;
@@ -112,7 +136,7 @@ impl WakuApp {
         let text_w = (w * 0.46).clamp(380.0, 640.0);
         let mut h = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
             pos2(hero.min.x + PAD, hero.min.y + 84.0),
-            vec2(text_w, HERO_H - 100.0),
+            vec2(text_w, 2000.0),
         )));
         let site_title = data
             .as_ref()
@@ -135,7 +159,7 @@ impl WakuApp {
                 widgets::loading(&mut h, &trf!("Loading from {sn} …", "กำลังโหลดจาก {sn} …"));
             }
             Some(Err(e)) => {
-                widgets::error_box(&mut h, &crate::app::first_line(e));
+                widgets::problem_card(&mut h, &crate::app::friendly_error(e), e);
                 h.add_space(8.0);
                 if widgets::outline_button(
                     &mut h,
@@ -151,7 +175,7 @@ impl WakuApp {
                 }
             }
             Some(Ok(d)) => {
-                let seasons = seasons_of(d);
+                let seasons = seasons_of(d, track);
                 // badges row
                 h.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
@@ -183,12 +207,12 @@ impl WakuApp {
                                 _ => {}
                             }
                             if let Some(sc) = m.score {
-                                badge(ui, &format!("★ {sc}%"), false);
+                                badge(ui, &format!("{} {sc}%", icon::STAR), false);
                             }
                         }
                         None => badge(ui, tr("Series", "ซีรีส์"), first),
                     }
-                    let (s, n) = (seasons.len(), d.episodes.len());
+                    let (s, n) = (seasons.len(), d.episodes.iter().filter(|e| e.dub == track).count());
                     let info = if s > 1 {
                         trf!("{s} Seasons · {n} Episodes", "{s} ซีซั่น · {n} ตอน")
                     } else {
@@ -225,9 +249,9 @@ impl WakuApp {
                 h.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(
-                        RichText::new("●")
+                        RichText::new(icon::CIRCLE)
                             .color(self.health_of(&d.source))
-                            .size(12.0),
+                            .size(11.0),
                     );
                     ui.label(
                         RichText::new(self.source_name(&d.source))
@@ -278,23 +302,40 @@ impl WakuApp {
                 h.add_space(18.0);
 
                 // primary actions
+                // continue: the last episode again when it was left half-way, otherwise the next one on its track
                 let resume = last.as_ref().and_then(|hst| {
-                    let i = d
-                        .episodes
+                    let on_track: Vec<&Episode> = d.episodes.iter().filter(|e| e.dub == last_dub.unwrap_or(hst.dub)).collect();
+                    let i = on_track
                         .iter()
-                        .position(|e| e.url == hst.ep_url || (e.num - hst.ep_num).abs() < 0.01)?;
-                    d.episodes.get(i + 1).or(d.episodes.get(i)).cloned()
+                        .position(|e| e.url == hst.ep_url)
+                        .or_else(|| on_track.iter().position(|e| (e.num - hst.ep_num).abs() < 0.01))?;
+                    let done = self.lib.fraction(&on_track[i].url).is_none_or(|f| f > 0.9);
+                    let pick = if done { on_track.get(i + 1).or(on_track.get(i)) } else { on_track.get(i) };
+                    pick.map(|e| (*e).clone())
                 });
+                let first_ep = d.episodes.iter().find(|e| e.dub == track).or(d.episodes.first());
                 let in_list = self.lib.in_list(&d.url);
+                // came from "Which anime is this?": play the found moment
+                let scene = self.scene_for(m.as_ref()).and_then(|j| {
+                    let n = j.episode.unwrap_or(1.0);
+                    d.episodes.iter().find(|e| e.dub == track && (e.num - n).abs() < 0.01).or_else(|| d.episodes.iter().find(|e| (e.num - n).abs() < 0.01)).cloned().map(|e| (e, j.at))
+                });
+                if let Some((e, at)) = &scene {
+                    let s = i18n::ep_short(e);
+                    let t = crate::scene::mmss(*at);
+                    if widgets::play_button(&mut h, &trf!("Play {s} from {t} (the scene you searched)", "เล่น {s} จาก {t} (ฉากที่ค้นหา)")).clicked() {
+                        self.start_once = Some((e.url.clone(), *at));
+                        self.scene.jump = None;
+                        act = Some(Act::Play(e.clone()));
+                    }
+                    h.add_space(10.0);
+                }
                 h.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
-                    match (&resume, d.episodes.first()) {
+                    match (&resume, first_ep) {
                         (Some(e), _) => {
                             let s = i18n::ep_short(e);
-                            if widgets::primary_button(
-                                ui,
-                                &format!("{}  {}", icon::PLAY, trf!("Continue {s}", "ดูต่อ {s}")),
-                            )
+                            if widgets::play_button(ui, &trf!("Continue {s}", "ดูต่อ {s}"))
                             .clicked()
                             {
                                 act = Some(Act::Play(e.clone()));
@@ -302,14 +343,7 @@ impl WakuApp {
                         }
                         (None, Some(e)) => {
                             let s = i18n::ep_short(e);
-                            if widgets::primary_button(
-                                ui,
-                                &format!(
-                                    "{}  {}",
-                                    icon::PLAY,
-                                    trf!("Start Watching {s}", "เริ่มดู {s}")
-                                ),
-                            )
+                            if widgets::play_button(ui, &trf!("Start Watching {s}", "เริ่มดู {s}"))
                             .clicked()
                             {
                                 act = Some(Act::Play(e.clone()));
@@ -348,6 +382,12 @@ impl WakuApp {
             }
         }
 
+        let need = (h.min_rect().max.y - hero.min.y + 36.0).max(HERO_H);
+        if (need - hero_h).abs() > 1.0 {
+            ui.ctx().data_mut(|d| d.insert_temp(hero_id, need));
+            ui.ctx().request_repaint();
+        }
+
         // ---------------------------------------------------------- tabs + body
         if let Some(Ok(d)) = &data {
             Frame::new()
@@ -358,9 +398,10 @@ impl WakuApp {
                     bottom: 0,
                 })
                 .show(ui, |ui| {
-                    let tabs = [Tab::Episodes, Tab::Details, Tab::Sources, Tab::More];
+                    let tabs = [Tab::Episodes, Tab::Order, Tab::Details, Tab::Sources, Tab::More];
                     let labels: Vec<String> = vec![
                         tr("Episodes", "ตอน").into(),
+                        tr("Watch Order", "ลำดับการดู").into(),
                         tr("Details", "รายละเอียด").into(),
                         tr("Other Sources", "แหล่งอื่น").into(),
                         tr("More Like This", "เรื่องอื่นๆ").into(),
@@ -379,9 +420,11 @@ impl WakuApp {
                             cover.as_deref(),
                             sel_season,
                             newest_first,
-                            last.as_ref().map(|h| h.ep_num),
+                            (track, has_sub && has_dub),
+                            last.as_ref(),
                             &mut act,
                         ),
+                        Tab::Order => self.order_tab(ui, m.as_ref()),
                         Tab::Details => self.details_tab(ui, d, m.as_ref(), &card, &mut card_act),
                         Tab::Sources => self.sources_tab(ui, &mut act),
                         Tab::More => self.more_tab(ui, d, &mut act),
@@ -411,6 +454,20 @@ impl WakuApp {
                     self.pick_server(d, &e)
                 }
             }
+            Some(Act::Download(e)) => {
+                if let Some(Ok(d)) = &data {
+                    let mut c = d.card();
+                    c.poster = c.poster.or(card.poster.clone());
+                    self.download_episodes(&c, vec![e]);
+                }
+            }
+            Some(Act::DownloadAll(eps)) => {
+                if let Some(Ok(d)) = &data {
+                    let mut c = d.card();
+                    c.poster = c.poster.or(card.poster.clone());
+                    self.download_episodes(&c, eps);
+                }
+            }
             Some(Act::Open(c)) => self.open(&c),
             Some(Act::ToggleList) => {
                 if let Some(Ok(d)) = &data {
@@ -430,6 +487,12 @@ impl WakuApp {
             Some(Act::Season(n)) => {
                 if let Some(s) = &mut self.detail {
                     s.season = Some(n);
+                }
+            }
+            Some(Act::Track(dub)) => {
+                if let Some(s) = self.detail.as_mut() {
+                    s.dub = Some(dub);
+                    s.season = None;
                 }
             }
             Some(Act::Sort) => {
@@ -457,10 +520,11 @@ impl WakuApp {
         art: Option<&str>,
         sel: Option<u32>,
         newest_first: bool,
-        watched: Option<f32>,
+        (track, both): (bool, bool),
+        last: Option<&waku_core::store::HistoryEntry>,
         act: &mut Option<Act>,
     ) {
-        let seasons = seasons_of(d);
+        let seasons = seasons_of(d, track);
         if d.episodes.is_empty() {
             widgets::empty(
                 ui,
@@ -476,22 +540,28 @@ impl WakuApp {
             .filter(|s| seasons.iter().any(|x| x.0 == *s))
             .unwrap_or(seasons[0].0);
         let src_name = self.source_name(&d.source);
-        let sub = if d.tags.iter().any(|t| t == "Dub") {
-            i18n::tag("Dub")
-        } else {
-            i18n::tag("Sub")
-        };
+        let sub = if track { i18n::tag("Dub") } else { i18n::tag("Sub") };
+        // the episode the user watched last: exact URL first, else same number on the same track
+        let last_url: Option<String> = last.and_then(|h| {
+            d.episodes
+                .iter()
+                .find(|e| e.url == h.ep_url)
+                .or_else(|| d.episodes.iter().find(|e| e.dub == h.dub && (e.num - h.ep_num).abs() < 0.001))
+                .map(|e| e.url.clone())
+        });
+        let last_ep = last_url.as_ref().and_then(|u| d.episodes.iter().find(|e| &e.url == u));
 
-        ui.horizontal_top(|ui| {
+        // the season column's panel runs down beside the whole episode list (drawn once its height is known)
+        let col_w = 220.0;
+        let bg = ui.painter().add(egui::Shape::Noop);
+        let row = ui.horizontal_top(|ui| {
             // season column
-            let col_w = 220.0;
             ui.allocate_ui_with_layout(
                 vec2(col_w, 10.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.set_width(col_w);
                     Frame::new()
-                        .fill(BAR)
                         .corner_radius(CornerRadius::same(8))
                         .show(ui, |ui| {
                             ui.set_width(col_w);
@@ -545,6 +615,14 @@ impl WakuApp {
             // episode cards
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
+                    if both {
+                        let labels = [i18n::tag("Sub"), i18n::tag("Dub")];
+                        let cur = usize::from(track);
+                        let new = widgets::segmented(ui, &labels, cur);
+                        if new != cur {
+                            *act = Some(Act::Track(new == 1));
+                        }
+                    }
                     let label = if newest_first {
                         tr("Newest first", "ล่าสุดก่อน")
                     } else {
@@ -556,10 +634,26 @@ impl WakuApp {
                         {
                             *act = Some(Act::Sort);
                         }
+                        let todo: Vec<Episode> = d
+                            .episodes
+                            .iter()
+                            .filter(|e| e.season == season && e.dub == track && self.dl_state(&e.url).is_none())
+                            .cloned()
+                            .collect();
+                        if !todo.is_empty()
+                            && widgets::ghost_button(ui, &format!("{}  {}", icon::DOWNLOAD_SIMPLE, tr("Download all", "ดาวน์โหลดทั้งหมด")))
+                                .on_hover_text({
+                                    let n = todo.len();
+                                    trf!("{n} episodes", "{n} ตอน")
+                                })
+                                .clicked()
+                        {
+                            *act = Some(Act::DownloadAll(todo));
+                        }
                     });
                 });
                 let mut eps: Vec<&Episode> =
-                    d.episodes.iter().filter(|e| e.season == season).collect();
+                    d.episodes.iter().filter(|e| e.season == season && e.dub == track).collect();
                 if newest_first {
                     eps.reverse();
                 }
@@ -567,8 +661,11 @@ impl WakuApp {
                 // AniList numbers episodes per entry: only the first season of a page maps 1:1
                 let use_meta = seasons.first().is_some_and(|f| f.0 == season);
                 for e in eps {
-                    let seen = watched.is_some_and(|n| e.num <= n + 0.001);
-                    let is_last = watched.is_some_and(|n| (e.num - n).abs() < 0.001);
+                    let frac = self.lib.fraction(&e.url);
+                    let is_last = last_url.as_deref() == Some(e.url.as_str());
+                    // earlier episodes of the same track/season count as watched (history keeps one entry per show)
+                    let before_last = last_ep.is_some_and(|l| l.dub == e.dub && (l.season, l.num) > (e.season, e.num));
+                    let seen = frac.is_some_and(|f| f > 0.9) || before_last || (is_last && frac.is_none());
                     let n = fmt_num(e.num);
                     let em = m
                         .filter(|_| use_meta && e.num.fract() == 0.0)
@@ -578,40 +675,56 @@ impl WakuApp {
                         .filter(|t| !t.is_empty())
                         .unwrap_or_else(|| i18n::ep_name(e));
                     let title = format!("{n}. {name}");
-                    let mut parts = vec![sub.clone(), src_name.clone()];
+                    // like the reference: length first, the rest short (sub/dub and the site are in the header)
+                    let mut parts: Vec<String> = Vec::new();
                     if let Some(len) = em.and_then(|x| x.length).or(m.and_then(|m| m.duration)) {
                         parts.push(trf!("{len}m", "{len} นาที"));
                     }
                     if let Some(a) = em.and_then(|x| x.aired.clone()) {
                         parts.push(a);
                     }
-                    if is_last {
+                    if is_last && !seen {
+                        parts.push(tr("in progress", "ดูค้างไว้").into());
+                    } else if is_last {
                         parts.push(tr("last watched", "ดูล่าสุด").into());
                     } else if seen {
                         parts.push(tr("watched", "ดูแล้ว").into());
                     }
+                    if parts.is_empty() {
+                        parts.push(format!("{sub} · {src_name}"));
+                    }
                     let meta_line = parts.join(" · ");
                     // the site's own label when it differs from the official title (e.g. a Thai name)
-                    let desc = String::new();
+                    // the summary opens under the selected (last watched) episode, the others show it on hover
+                    let summary = em.and_then(|x| x.summary.clone()).unwrap_or_default();
+                    let desc = if is_last { summary.clone() } else { String::new() };
+
                     let c = EpCard {
                         title: &title,
                         meta: &meta_line,
                         desc: &desc,
-                        progress: seen.then_some(1.0),
+                        progress: if seen && !is_last { Some(1.0) } else { frac.filter(|f| *f > 0.01).or(seen.then_some(1.0)) },
                         selected: is_last,
+                        dl: self.dl_state(&e.url),
+                        local: false,
+                        tip: if is_last { "" } else { &summary },
                     };
                     let thumb = em.and_then(|x| x.thumbnail.as_deref()).or(art);
-                    let (play, srv) =
-                        episode_card(ui, &mut self.images, thumb, referer, &c, &e.url);
-                    if play {
+                    let k = episode_card(ui, &mut self.images, thumb, referer, &c, &e.url);
+                    if k.play {
                         *act = Some(Act::Play(e.clone()));
                     }
-                    if srv {
+                    if k.servers {
                         *act = Some(Act::Pick(e.clone()));
+                    }
+                    if k.download {
+                        *act = Some(Act::Download(e.clone()));
                     }
                 }
             });
         });
+        let r = row.response.rect;
+        ui.painter().set(bg, egui::Shape::rect_filled(Rect::from_min_size(r.min, vec2(col_w, r.height().max(62.0))), CornerRadius::same(8), BAR));
     }
 
     fn details_tab(
@@ -705,7 +818,7 @@ impl WakuApp {
                     tr("Episodes", "จำนวนตอน"),
                     &d.episodes.len().to_string(),
                 );
-                row(ui, tr("Seasons", "ซีซั่น"), &seasons_of(d).len().to_string());
+                row(ui, tr("Seasons", "ซีซั่น"), &seasons_of(d, !d.episodes.iter().any(|e| !e.dub)).len().to_string());
                 let tags: Vec<String> = d.tags.iter().map(|t| i18n::tag(t)).collect();
                 row(ui, tr("Tags", "แท็ก"), &tags.join(", "));
                 ui.label(RichText::new(tr("Page", "หน้าเว็บ")).color(MUTED));
@@ -888,9 +1001,9 @@ impl WakuApp {
 }
 
 /// (season number, episode count), in order.
-fn seasons_of(d: &AnimeDetail) -> Vec<(u32, usize)> {
+fn seasons_of(d: &AnimeDetail, dub: bool) -> Vec<(u32, usize)> {
     let mut v: Vec<(u32, usize)> = Vec::new();
-    for e in &d.episodes {
+    for e in d.episodes.iter().filter(|e| e.dub == dub) {
         match v.iter_mut().find(|x| x.0 == e.season) {
             Some(x) => x.1 += 1,
             None => v.push((e.season, 1)),

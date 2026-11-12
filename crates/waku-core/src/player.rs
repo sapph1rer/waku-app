@@ -85,14 +85,26 @@ pub struct Candidate {
     pub user_agent: String,
     /// HLS playlist served with a misleading extension (`.txt`)
     pub force_hls: bool,
+    /// extra request headers ("Origin: https://…")
+    pub headers: Vec<String>,
     /// the link is a media file / playlist (false = a host page that needs yt-dlp)
     pub direct: bool,
     pub title: String,
+    /// where it comes from, for the player's info: source id, server name, picture height
+    pub source: String,
+    pub server: String,
+    pub height: Option<u32>,
+    /// every quality of the stream (height, URL), for the player's quality menu
+    pub variants: Vec<(Option<u32>, String)>,
 }
 
 /// Referer values to try for a stream, best first (the embedding page's origin works for most hosts).
 pub fn referers(stream: &Stream, v: &Variant) -> Vec<String> {
     let mut refs: Vec<String> = vec![origin_of(&stream.page)];
+    if stream.direct() && stream.hls {
+        // the extractor already fetched the playlist with the full page URL as Referer
+        refs.insert(0, stream.page.clone());
+    }
     if stream.direct() {
         for extra in [origin_of(&v.url), stream.page.clone()] {
             if !refs.contains(&extra) {
@@ -105,16 +117,26 @@ pub fn referers(stream: &Stream, v: &Variant) -> Vec<String> {
 
 /// Everything the built-in player should try for one variant, in order.
 pub fn candidates(stream: &Stream, v: &Variant, title: &str) -> Vec<Candidate> {
-    let force_hls = v.url.to_lowercase().split('?').next().unwrap_or("").ends_with(".txt");
+    let path = v.url.to_lowercase();
+    let path = path.split('?').next().unwrap_or("");
+    let force_hls = path.ends_with(".txt") || (stream.hls && !path.ends_with(".m3u8") && !path.ends_with(".mp4"));
+    // a "User-Agent:" header (links caught in the browser helper, tied to its cookies) replaces ours
+    let ua = stream.headers.iter().find_map(|h| h.strip_prefix("User-Agent:").map(|v| v.trim().to_string())).unwrap_or_else(|| UA.to_string());
+    let headers: Vec<String> = stream.headers.iter().filter(|h| !h.starts_with("User-Agent:")).cloned().collect();
     referers(stream, v)
         .into_iter()
         .map(|rf| Candidate {
             url: v.url.clone(),
             referrer: rf,
-            user_agent: UA.to_string(),
+            user_agent: ua.clone(),
             force_hls,
+            headers: headers.clone(),
             direct: stream.direct(),
             title: title.to_string(),
+            source: stream.source.clone(),
+            server: stream.server.clone(),
+            height: v.height,
+            variants: stream.variants.iter().map(|x| (x.height, x.url.clone())).collect(),
         })
         .collect()
 }

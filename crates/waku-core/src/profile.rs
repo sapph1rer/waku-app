@@ -63,8 +63,75 @@ impl Default for SiteProfile {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SourcesFile {
+    /// bumped whenever the rules in the repository change (the app takes a higher one)
+    #[serde(default)]
+    pub revision: u32,
     #[serde(default)]
     pub source: Vec<SiteProfile>,
+}
+
+/// The `revision` of a sources file (0 = none / unreadable).
+pub fn sources_revision(text: &str) -> u32 {
+    toml::from_str::<SourcesFile>(text).map(|f| f.revision).unwrap_or(0)
+}
+
+fn applied_path() -> PathBuf {
+    config_dir().join("sources.applied")
+}
+
+fn text_hash(t: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(t.replace("\r\n", "\n").as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Remember that the app itself wrote this text (so a later update may replace it without asking).
+fn mark_applied(text: &str) {
+    let _ = std::fs::write(applied_path(), text_hash(text));
+}
+
+/// The user's sources.toml: (revision, edited by hand since the app last wrote it).
+pub fn local_sources_state() -> (u32, bool) {
+    let Ok(t) = std::fs::read_to_string(sources_path()) else { return (0, false) };
+    let applied = std::fs::read_to_string(applied_path()).unwrap_or_default();
+    // copies written before update tracking: unedited when they are exactly a built-in default
+    let pristine = applied.trim() == text_hash(&t) || t.replace("\r\n", "\n") == DEFAULT_SOURCES.replace("\r\n", "\n");
+    (sources_revision(&t), !pristine)
+}
+
+/// The rules file as published in the repository (`owner/repo`, branch main).
+pub fn sources_url(repo: &str) -> String {
+    format!("https://raw.githubusercontent.com/{}/main/crates/waku-core/sources.default.toml", repo.trim().trim_matches('/'))
+}
+
+/// Newer rules in the repository than on this PC: Some((text, revision)).
+pub fn check_remote_sources(http: &crate::http::Http, repo: &str) -> Result<Option<(String, u32)>> {
+    let text = http.get_plain(&sources_url(repo), None)?;
+    let list = parse_sources(&text)?;
+    if list.is_empty() {
+        anyhow::bail!("the repository's sources file has no sources");
+    }
+    let remote = sources_revision(&text);
+    let (local, _) = local_sources_state();
+    Ok((remote > local).then_some((text, remote)))
+}
+
+/// Write new rules as the user's sources.toml; `backup` keeps the old file as `sources.toml.bak-<time>`.
+pub fn apply_sources(text: &str, backup: bool) -> Result<Option<PathBuf>> {
+    parse_sources(text)?;
+    let p = sources_path();
+    let mut saved = None;
+    if backup && p.exists() {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let b = p.with_extension(format!("toml.bak-{t}"));
+        std::fs::copy(&p, &b)?;
+        saved = Some(b);
+    }
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(&p, text)?;
+    mark_applied(text);
+    Ok(saved)
 }
 
 pub fn parse_sources(text: &str) -> Result<Vec<SiteProfile>> {
@@ -82,6 +149,10 @@ pub fn parse_sources(text: &str) -> Result<Vec<SiteProfile>> {
     }
     Ok(out)
 }
+
+/// Sources that no longer serve videos: (id, reason shown in Settings).
+pub const RETIRED: &[(&str, &str)] =
+    &[("hareshi", "turned off: hareshi.net is now a directory of licensed streaming services (no videos to play)")];
 
 /// `%APPDATA%\waku` on Windows, `~/.config/waku` elsewhere.
 pub fn config_dir() -> PathBuf {
@@ -108,9 +179,19 @@ pub fn load_sources(path: &Path) -> Result<Vec<SiteProfile>> {
             std::fs::create_dir_all(d)?;
         }
         std::fs::write(path, DEFAULT_SOURCES)?;
+        if path == sources_path() {
+            mark_applied(DEFAULT_SOURCES);
+        }
     }
     let text = std::fs::read_to_string(path)?;
     let mut list = parse_sources(&text)?;
+    // sites that stopped hosting videos are switched off even in older copies of sources.toml
+    for p in list.iter_mut() {
+        if let Some((_, why)) = RETIRED.iter().find(|(id, _)| *id == p.id) {
+            p.enabled = false;
+            p.note = why.to_string();
+        }
+    }
     for d in parse_sources(DEFAULT_SOURCES)? {
         if !list.iter().any(|p| p.id == d.id) {
             list.push(d);
@@ -122,6 +203,14 @@ pub fn load_sources(path: &Path) -> Result<Vec<SiteProfile>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revisions() {
+        assert_eq!(sources_revision(DEFAULT_SOURCES), 1);
+        assert_eq!(sources_revision("[[source]]\nid='x'\nbase='https://x'"), 0);
+        assert_eq!(text_hash("a\r\nb"), text_hash("a\nb"), "line endings do not count as an edit");
+        assert!(sources_url("sapph1rer/waku-app/").ends_with("/sapph1rer/waku-app/main/crates/waku-core/sources.default.toml"));
+    }
 
     #[test]
     fn defaults_parse() {

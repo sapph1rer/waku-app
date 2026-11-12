@@ -26,4 +26,6 @@ pub trait Source: Send + Sync {
     fn servers(&self, episode_url: &str) -> Result<Vec<Server>>;
     /// Resolve one server into a playable stream.
     fn resolve(&self, server: &Server, episode_url: &str, tr: &Trace) -> Result<Stream>;
+    /// Slow background upkeep (rebuilding a title index …), run off the UI path.
+    fn warm(&self) {}
 }

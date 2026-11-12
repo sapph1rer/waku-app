@@ -27,6 +27,8 @@ pub enum CardAct {
     Refresh(AnimeCard),
     Clear(AnimeCard),
     ToggleList(AnimeCard),
+    /// take a show out of Continue Watching (by its episode URL)
+    Unwatch(String),
 }
 
 /// One background thread identifies listing cards, one at a time, so AniList's rate limit
@@ -57,8 +59,27 @@ pub fn card_menu(
     identified: bool,
     act: &mut Option<CardAct>,
 ) {
+    card_menu_ext(resp, card, in_list, identified, None, act)
+}
+
+/// `card_menu` with "Remove from Continue Watching" (for history cards: their episode URL).
+pub fn card_menu_ext(
+    resp: &Response,
+    card: &AnimeCard,
+    in_list: bool,
+    identified: bool,
+    unwatch: Option<&str>,
+    act: &mut Option<CardAct>,
+) {
     resp.context_menu(|ui| {
         ui.set_min_width(210.0);
+        if let Some(ep) = unwatch {
+            if ui.button(format!("{}  {}", icon::X_CIRCLE, tr("Remove from Continue Watching", "เอาออกจากดูต่อ"))).clicked() {
+                *act = Some(CardAct::Unwatch(ep.to_string()));
+                ui.close();
+            }
+            ui.separator();
+        }
         if ui
             .button(format!("{}  {}", icon::PLAY, tr("Open", "เปิด")))
             .clicked()
@@ -165,15 +186,48 @@ impl WakuApp {
         }
     }
 
+    /// A Continue Watching card: like `draw_card`, with a "remove" button on the poster while hovered.
+    pub fn draw_history_card(&mut self, ui: &mut Ui, c: &AnimeCard, ep_url: &str, sub: &str, act: &mut Option<CardAct>) {
+        let view = self.card_view(c);
+        let referer = self.referer(&c.source);
+        let resp = widgets::anime_card(ui, &mut self.images, &view, &referer, sub);
+        let in_list = self.lib.in_list(&c.url);
+        let identified = self.meta_of(&c.url, &c.title).is_some();
+        card_menu_ext(&resp, c, in_list, identified, Some(ep_url), act);
+        // a small "remove" button, always there (dim), bright on hover; its own hit area on top of the card
+        let id = egui::Id::new(("unwatch", ep_url));
+        let close_c = resp.rect.min + egui::vec2(widgets::CARD_W - 16.0, 16.0);
+        let close_r = egui::Rect::from_center_size(close_c, egui::vec2(30.0, 30.0));
+        let hit = ui.interact(close_r, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let card_hv = ui.ctx().animate_bool_with_time(id.with("card"), resp.hovered() || hit.hovered(), 0.15);
+        let hv = ui.ctx().animate_bool_with_time(id.with("hv"), hit.hovered(), 0.1);
+        let p = ui.painter();
+        let alpha = 0.55 + 0.45 * card_hv;
+        p.circle_filled(close_c, 12.0, widgets::lerp_color(egui::Color32::from_black_alpha(200), egui::Color32::from_rgb(0xd9, 0x3a, 0x3a), hv).gamma_multiply(alpha));
+        p.circle_stroke(close_c, 12.0, egui::Stroke::new(1.0, egui::Color32::from_white_alpha((60.0 * alpha) as u8)));
+        let k = 4.2;
+        let st = egui::Stroke::new(1.8, egui::Color32::WHITE.gamma_multiply(alpha));
+        p.line_segment([close_c + egui::vec2(-k, -k), close_c + egui::vec2(k, k)], st);
+        p.line_segment([close_c + egui::vec2(-k, k), close_c + egui::vec2(k, -k)], st);
+        let hit = hit.on_hover_text(tr("Remove from Continue Watching", "เอาออกจากดูต่อ"));
+        if hit.clicked() {
+            *act = Some(CardAct::Unwatch(ep_url.to_string()));
+        } else if resp.clicked() && !hit.hovered() {
+            *act = Some(CardAct::Open(c.clone()));
+        }
+    }
+
     /// Full metadata (with episode titles) for an opened series page.
     pub fn ensure_meta_detail(&mut self, d: &AnimeDetail) {
         if !self.settings.fetch_meta || self.meta_pending.contains(&d.url) {
             return;
         }
         let existing = self.meta.get(&d.url, &d.title).cloned();
+        // an automatic match to a show that has not aired, for a page that has episodes, is wrong: match again
+        let existing = existing.filter(|m| m.manual || !m.matched || d.episodes.is_empty() || m.status.as_deref() != Some("NOT_YET_RELEASED"));
         if let Some(m) = &existing
             && !m.stale(meta::now())
-            && (m.enriched || !m.matched)
+            && ((m.enriched && m.anizip && m.eps_rev >= meta::EPS_REV) || !m.matched)
         {
             return;
         }
@@ -238,6 +292,10 @@ impl WakuApp {
         match a {
             CardAct::Open(c) => self.open(&c),
             CardAct::ToggleList(c) => self.lib.toggle_list(&c),
+            CardAct::Unwatch(ep) => {
+                self.lib.unwatch(&ep);
+                self.notify(tr("Removed from Continue Watching", "เอาออกจากดูต่อแล้ว"));
+            }
             CardAct::Identify(c) => self.open_identify(&c, 0),
             CardAct::Refresh(c) => self.refresh_meta(&c),
             CardAct::Clear(c) => {
@@ -549,7 +607,7 @@ impl WakuApp {
             p.text(
                 pos2(r.max.x - 16.0, r.center().y),
                 egui::Align2::RIGHT_CENTER,
-                format!("★ {sc}%"),
+                format!("{} {sc}%", icon::STAR),
                 bold(14.0),
                 if sc >= 75 { GOOD } else { WARN },
             );

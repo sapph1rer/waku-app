@@ -1,7 +1,11 @@
 //! waku-core — multi-source Thai anime scraping engine used by the Waku app.
 
+pub mod srcstats;
 pub mod http;
 pub mod manager;
+pub mod media;
+pub mod browser;
+pub mod health;
 pub mod meta;
 pub mod model;
 pub mod player;

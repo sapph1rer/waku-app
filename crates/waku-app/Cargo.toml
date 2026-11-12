@@ -9,7 +9,24 @@ chrono = "0.4"
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
 # the player lives in its own workspace next to this one (../rmp), so other apps can use it too
 rmp-egui = { path = "../../../rmp/crates/rmp-egui" }
+rmp-core = { path = "../../../rmp/crates/rmp-core" }
 egui = "0.36"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip"] }
+aes = "0.8"
+arboard = "3.7"
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+getrandom = "0.2"
+base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+cbc = "0.1"
+serde = { version = "1", features = ["derive"] }
 egui-phosphor = "0.14"
+serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 waku-core = { version = "0.1.0", path = "../waku-core" }
+
+[build-dependencies]
+# puts assets/icon.ico into waku-app.exe (Explorer, taskbar pin, Start menu)
+winresource = "0.1"

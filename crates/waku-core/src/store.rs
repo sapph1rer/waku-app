@@ -13,6 +13,14 @@ fn load<T: DeserializeOwned + Default>(name: &str) -> T {
         .unwrap_or_default()
 }
 
+pub(crate) fn load_json<T: DeserializeOwned + Default>(name: &str) -> T {
+    load(name)
+}
+
+pub(crate) fn save_json<T: Serialize>(name: &str, v: &T) {
+    save(name, v)
+}
+
 fn save<T: Serialize>(name: &str, v: &T) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -76,8 +84,27 @@ pub struct Settings {
     pub audio_langs: String,
     pub sub_langs: String,
     pub autoplay_next: bool,
+    /// Jump over openings / endings by themselves (AniSkip times); the "Skip" button shows either way.
+    pub auto_skip: bool,
+    /// Where downloads go ("" = `Downloads` next to the program).
+    pub download_dir: String,
+    /// Discord Rich Presence ("Watching …"), with the Discord application id whose name it shows
+    pub discord_presence: bool,
+    pub discord_app_id: String,
+    /// name shown to the others in a watch party
+    pub party_name: String,
+    /// ntfy server for internet watch parties ("" = https://ntfy.sh; a self-hosted ntfy works too)
+    pub party_server: String,
+    /// GitHub repository the app updates and the sources' rules come from ("owner/repo")
+    pub update_repo: String,
+    /// look for a new version of the app on start
+    pub check_updates: bool,
+    /// take new sources rules from the repository by themselves (when sources.toml was not edited by hand)
+    pub auto_update_sources: bool,
     /// Resume episodes from where they were left.
     pub resume: bool,
+    /// Latest searches, newest first (shown as shortcuts on the Search page).
+    pub recent_searches: Vec<String>,
 }
 
 impl Default for Settings {
@@ -109,7 +136,17 @@ impl Default for Settings {
             audio_langs: String::new(),
             sub_langs: "Thai, English".into(),
             autoplay_next: true,
+            auto_skip: true,
+            download_dir: String::new(),
+            discord_presence: false,
+            discord_app_id: String::new(),
+            party_name: String::new(),
+            party_server: String::new(),
+            update_repo: "sapph1rer/waku-app".into(),
+            check_updates: true,
+            auto_update_sources: true,
             resume: true,
+            recent_searches: Vec::new(),
         }
     }
 }
@@ -130,6 +167,9 @@ pub struct HistoryEntry {
     pub ep_label: String,
     pub ep_url: String,
     pub when: u64,
+    /// the Thai-dub track (not the subbed one)
+    #[serde(default)]
+    pub dub: bool,
     /// where the built-in player stopped (seconds) and the episode length (0 = unknown)
     #[serde(default)]
     pub pos: f64,
@@ -156,7 +196,13 @@ pub struct Library {
 
 impl Library {
     pub fn load() -> Self {
-        load("library.json")
+        let mut l: Library = load("library.json");
+        let n = l.history.len();
+        l.dedupe_history();
+        if l.history.len() != n {
+            l.save();
+        }
+        l
     }
     pub fn save(&self) {
         save("library.json", self)
@@ -176,10 +222,9 @@ impl Library {
     }
 
     /// Record a watched episode (one entry per anime title, newest first).
-    pub fn watched(&mut self, card: &AnimeCard, ep_num: f32, ep_label: &str, ep_url: &str) {
-        let key = crate::text::norm(&card.title);
-        self.history
-            .retain(|h| h.card.url != card.url && crate::text::norm(&h.card.title) != key);
+    pub fn watched(&mut self, card: &AnimeCard, ep_num: f32, ep_label: &str, ep_url: &str, dub: bool) {
+        // one entry per show, whichever site it was watched on
+        self.history.retain(|h| h.card.url != card.url && !crate::text::same_show(&h.card.title, &card.title));
         self.history.insert(
             0,
             HistoryEntry {
@@ -188,6 +233,7 @@ impl Library {
                 ep_label: ep_label.into(),
                 ep_url: ep_url.into(),
                 when: now(),
+                dub,
                 pos: 0.0,
                 dur: 0.0,
             },
@@ -222,10 +268,44 @@ impl Library {
         }
     }
 
+    /// How much of an episode was watched (0..=1), from the player's saved position.
+    pub fn fraction(&self, ep_url: &str) -> Option<f32> {
+        self.progress.get(ep_url).filter(|p| p.dur > 0.0).map(|p| (p.pos / p.dur).clamp(0.0, 1.0) as f32)
+    }
+
     pub fn last_watched(&self, url: &str, title: &str) -> Option<&HistoryEntry> {
-        let key = crate::text::norm(title);
-        self.history
-            .iter()
-            .find(|h| h.card.url == url || crate::text::norm(&h.card.title) == key)
+        self.history.iter().find(|h| h.card.url == url).or_else(|| self.history.iter().find(|h| crate::text::same_show(&h.card.title, title)))
+    }
+
+    /// Forget a show's history entry (it was recorded but never really played).
+    pub fn unwatch(&mut self, ep_url: &str) {
+        let n = self.history.len();
+        self.history.retain(|h| h.ep_url != ep_url);
+        if self.history.len() != n {
+            self.save();
+        }
+    }
+
+    /// Clean-up at start: older versions recorded an entry per site (also for sites that failed to play), so the
+    /// same show could sit in Continue Watching several times. Keep the newest entry of each show; of entries
+    /// equally new, prefer one with a saved position.
+    pub fn dedupe_history(&mut self) {
+        let mut kept: Vec<HistoryEntry> = Vec::new();
+        let mut all = std::mem::take(&mut self.history);
+        all.sort_by(|a, b| b.when.cmp(&a.when));
+        for h in all {
+            match kept.iter_mut().find(|k| crate::text::same_show(&k.card.title, &h.card.title)) {
+                Some(k) => {
+                    // the newer one stays unless it never played and the older one did
+                    let played = |e: &HistoryEntry, lib: &std::collections::HashMap<String, Progress>| lib.get(&e.ep_url).is_some_and(|p| p.pos > 5.0);
+                    if !played(k, &self.progress) && played(&h, &self.progress) {
+                        *k = h;
+                    }
+                }
+                None => kept.push(h),
+            }
+        }
+        kept.sort_by(|a, b| b.when.cmp(&a.when));
+        self.history = kept;
     }
 }

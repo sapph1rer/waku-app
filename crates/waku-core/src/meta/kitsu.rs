@@ -143,6 +143,7 @@ pub fn parse_episodes(v: &Value) -> Result<(Vec<EpMeta>, bool)> {
             aired,
             length,
             source: "kitsu".into(),
+            summary: a.get("description").or_else(|| a.get("synopsis")).and_then(|x| x.as_str()).map(|t| crate::text::strip_tags(t).trim().to_string()).filter(|t| t.len() > 10),
         });
     }
     let more = v

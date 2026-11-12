@@ -6,7 +6,7 @@ use crate::http::{Http, par_map};
 use crate::model::*;
 use crate::profile::{SiteProfile, cache_dir};
 use crate::source::Source;
-use crate::stream::{self, Trace, find_variants, rank_of_embed, sniff_stream, url_from_value};
+use crate::stream::{self, Trace, find_variants, rank_of_embed, url_from_value};
 use crate::text::*;
 use anyhow::{Result, anyhow, bail};
 use regex::Regex;
@@ -63,6 +63,15 @@ const IGNORED: &[&str] = &[
 ];
 
 const PLAYER_FRAG: &str = "#wk-player=";
+/// Episode `n` of a single-page series whose episodes are `[data-ep]` buttons.
+const EP_FRAG: &str = "#wk-ep=";
+
+/// "1th - 3" (anime-waku dub list) -> (season 1, episode 3)
+fn parse_dub_label(t: &str) -> Option<(Option<u32>, f32)> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let c = RE.get_or_init(|| Regex::new(r"^\s*(\d+)\s*th\s*-\s*(\d+(?:\.\d+)?)").unwrap()).captures(t)?;
+    Some((c[1].parse().ok(), c[2].parse().ok()?))
+}
 
 fn sel(s: &str) -> Option<Selector> {
     if s.trim().is_empty() {
@@ -117,6 +126,117 @@ fn bg_url(el: ElementRef, page: &str) -> Option<String> {
     let rest = &st[i..];
     let j = rest.find(')')?;
     abs(page, rest[..j].trim_matches(['"', '\'', ' ']))
+}
+
+/// Episode is the Thai dub (พากย์ไทย) and not the subbed one?
+pub fn is_dub(text: &str) -> bool {
+    let low = text.to_lowercase();
+    low.contains("พากย์") || low.contains("เสียงไทย") || low.contains("dub") || low.contains("-thai-") || low.contains("/thai-") || low.contains("-th-ep") || {
+        static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        // anime-waku: "1th - 3" = season 1, Thai track, episode 3
+        RE.get_or_init(|| Regex::new(r"^\s*\d+\s*th\s*-\s*\d").unwrap()).is_match(&low)
+    }
+}
+
+/// A link text that describes a whole series ("EP.1-26", "ตอนที่ 1-12") rather than one episode.
+fn is_range_label(text: &str) -> bool {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)(?:ep\.?|ตอนที่|episode)\s*\d+(?:\.\d+)?\s*[-–~]\s*\d+").unwrap()).is_match(text)
+}
+
+/// Is a text a usable title (not a score "8.3", a quality "HD", a language tag …)?
+fn title_like(t: &str) -> bool {
+    static JUNK: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let t = t.trim();
+    let n = t.chars().count();
+    if !(2..=200).contains(&n) {
+        return false;
+    }
+    let junk = JUNK.get_or_init(|| {
+        Regex::new(r"(?i)^(?:[\d.,/\s%★☆]+|hd|fhd|sd|4k|uhd|ซับไทย|พากย์ไทย|sub|dub|thai|new|ใหม่|จบแล้ว|ยังไม่จบ|ep\.?\s*\d+|ตอนที่\s*\d+|[\d.]+\s*(?:hd|fhd|sd)|play|ดูเลย|watch)$").unwrap()
+    });
+    !junk.is_match(t)
+}
+
+/// Best title among the texts of a card: headings / title captions first (longest), then the link's
+/// `title`, image alt and finally the link text (which glues scores, quality and language tags together).
+fn best_title(card: ElementRef, a: ElementRef) -> String {
+    let ok = |t: &String| title_like(t) && !t.eq_ignore_ascii_case("play") && !t.contains("play-button");
+    let longest = |mut v: Vec<String>| {
+        v.retain(|t| ok(t));
+        v.sort_by_key(|t| std::cmp::Reverse(t.chars().count().min(160)));
+        v.into_iter().next()
+    };
+    let heads: Vec<String> =
+        card.select(&sel_must("h1, h2, h3, h4, h5, .title, .tt, [class*=title], [class*=name]")).map(text_of).collect();
+    if let Some(t) = longest(heads) {
+        return t;
+    }
+    let mut other: Vec<String> = Vec::new();
+    if let Some(t) = a.value().attr("title") {
+        other.push(clean(t));
+    }
+    for img in card.select(&sel_must("img[alt]")) {
+        other.push(clean(img.value().attr("alt").unwrap_or("")));
+    }
+    if let Some(t) = longest(other) {
+        return t;
+    }
+    longest(vec![text_of(a)]).unwrap_or_default()
+}
+
+/// Poster-sized image of a card: lazy attributes first, skipping icons / play buttons / placeholders.
+fn best_poster(card: ElementRef, page: &str, styles: &std::collections::HashMap<String, String>) -> Option<String> {
+    let mut best: Option<(i64, String)> = None;
+    for img in card.select(&sel_must("img")) {
+        let Some(u) = img_url(img, page) else { continue };
+        let low = u.to_lowercase();
+        if low.ends_with(".svg") || ["play-button", "play.png", "icon", "logo", "placeholder", "thumbnail.jpg", "loading", "blank.gif", "spacer"].iter().any(|k| low.contains(k)) {
+            continue;
+        }
+        let w: i64 = img.value().attr("width").and_then(|x| x.parse().ok()).unwrap_or(150);
+        if w < 60 {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| w > b.0) {
+            best = Some((w, u));
+        }
+    }
+    if let Some((_, u)) = best {
+        return Some(u);
+    }
+    // background-image on the card or one of its children
+    for el in std::iter::once(card).chain(card.descendants().filter_map(ElementRef::wrap)) {
+        if let Some(u) = bg_url(el, page) {
+            return Some(u);
+        }
+    }
+    // Elementor loop items: background images live in a <style> block keyed by "e-loop-item-<id>"
+    let class = card.value().attr("class").unwrap_or("");
+    for c in class.split_whitespace() {
+        if let Some(u) = styles.get(c) {
+            return abs(page, u);
+        }
+    }
+    for anc in card.ancestors().take(3).filter_map(ElementRef::wrap) {
+        for c in anc.value().attr("class").unwrap_or("").split_whitespace() {
+            if let Some(u) = styles.get(c) {
+                return abs(page, u);
+            }
+        }
+    }
+    None
+}
+
+/// `.e-loop-item-123 … {background-image:url("…")}` rules of a page: class -> image url.
+fn style_backgrounds(html: &str) -> std::collections::HashMap<String, String> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r#"\.(e-loop-item-\d+|post-\d+)[^{]{0,300}\{[^}]*background-image\s*:\s*url\(\s*["']?([^"')]+)"#).unwrap());
+    let mut m = std::collections::HashMap::new();
+    for c in re.captures_iter(html) {
+        m.entry(c[1].to_string()).or_insert_with(|| c[2].to_string());
+    }
+    m
 }
 
 pub struct WpSource {
@@ -285,16 +405,9 @@ impl WpSource {
                     continue;
                 };
                 let url = abs(page, a.value().attr("href").unwrap_or_default()).unwrap_or_default();
-                let img = card.select(&img_sel).next();
-                let title = card
-                    .select(&sel_must("h2, h3, h4, .title, .tt"))
-                    .next()
-                    .map(text_of)
-                    .filter(|t| !t.is_empty())
-                    .or_else(|| a.value().attr("title").map(clean))
-                    .or_else(|| img.and_then(|i| i.value().attr("alt")).map(clean))
-                    .unwrap_or_else(|| text_of(a));
-                let poster = img.and_then(|i| img_url(i, page));
+                let styles = style_backgrounds(html);
+                let title = best_title(card, a);
+                let poster = best_poster(card, page, &styles);
                 let badge = card
                     .select(&sel_must(".epx, .ep, .episode, .quality, .label, .badge"))
                     .next()
@@ -315,6 +428,7 @@ impl WpSource {
         }
 
         // generic: every series link, poster from the link or its nearest single-link ancestor
+        let styles = style_backgrounds(html);
         for a in doc.select(&a_sel) {
             let Some(url) = a.value().attr("href").and_then(|h| abs(page, h)) else {
                 continue;
@@ -322,15 +436,8 @@ impl WpSource {
             if !self.is_series_url(&url) {
                 continue;
             }
-            let mut poster = a
-                .select(&img_sel)
-                .next()
-                .and_then(|i| img_url(i, page))
-                .or_else(|| bg_url(a, page));
-            let mut title = a.value().attr("title").map(clean).unwrap_or_default();
-            if title.is_empty() {
-                title = text_of(a);
-            }
+            let mut poster = best_poster(a, page, &styles);
+            let mut title = best_title(a, a);
             let mut badge = None;
             for anc in a.ancestors().take(4) {
                 let Some(e) = ElementRef::wrap(anc) else {
@@ -353,14 +460,10 @@ impl WpSource {
                     break;
                 }
                 if poster.is_none() {
-                    poster = e.select(&img_sel).next().and_then(|i| img_url(i, page));
+                    poster = best_poster(e, page, &styles);
                 }
-                if (title.is_empty() || title.chars().count() < 3)
-                    && let Some(t) = e
-                        .select(&sel_must("h2, h3, h4, .title, .tt"))
-                        .next()
-                        .map(text_of)
-                {
+                let t = best_title(e, a);
+                if t.chars().count() > title.chars().count() && t.chars().count() < 200 {
                     title = t;
                 }
                 if badge.is_none() {
@@ -371,13 +474,8 @@ impl WpSource {
                         .filter(|b| !b.is_empty());
                 }
             }
-            if title.is_empty() {
-                title = a
-                    .select(&img_sel)
-                    .next()
-                    .and_then(|i| i.value().attr("alt"))
-                    .map(clean)
-                    .unwrap_or_default();
+            if !title_like(&title) {
+                continue;
             }
             let heuristic = self.series_re.is_none();
             if title.is_empty()
@@ -421,7 +519,17 @@ impl WpSource {
             .ok()
             .and_then(|t| SystemTime::now().duration_since(t).ok())
             .is_some_and(|age| age < Duration::from_secs(12 * 3600));
-        let mut idx = if fresh && !force { read() } else { Vec::new() };
+        if !force {
+            // never built on the search path (sitemaps can take many seconds, through the browser for Cloudflare
+            // sites): whatever is on disk, even old; `warm` rebuilds it in the background
+            let idx = read();
+            if let Ok(mut g) = self.index.lock() {
+                *g = Some(idx.clone());
+            }
+            let _ = fresh;
+            return idx;
+        }
+        let mut idx = Vec::new();
         if idx.is_empty() {
             idx = self.index_from_sitemaps();
             if idx.is_empty() {
@@ -506,12 +614,15 @@ impl WpSource {
             let link_text = text_of(el);
             if full.trim_end_matches('/') == page_clean
                 || !self.is_episode_url(&full, &link_text)
+                || is_range_label(&link_text)
+                || is_range_label(el.value().attr("title").unwrap_or(""))
                 || !seen.insert(full.clone())
             {
                 continue;
             }
             let mut season = None;
             let mut num: Option<f32> = None;
+            let mut dub = is_dub(&link_text) || is_dub(&percent_decode(&url_path(&full)));
             // "S - E" label in the nearest ancestor that holds only this link
             for anc in el.ancestors().take(4) {
                 let Some(a) = ElementRef::wrap(anc) else {
@@ -529,9 +640,11 @@ impl WpSource {
                 {
                     break;
                 }
-                if let Some((s, n)) = parse_episode(&text_of(a)) {
+                let t = text_of(a);
+                if let Some((s, n)) = parse_episode(&t).or_else(|| parse_dub_label(&t)) {
                     season = s;
                     num = Some(n);
+                    dub |= is_dub(&t);
                     break;
                 }
             }
@@ -547,7 +660,27 @@ impl WpSource {
                 num: num.unwrap_or(0.0),
                 label: link_text,
                 url: full,
+                dub,
             });
+        }
+        // a page linking to other series' episodes (sidebars, "related") must not add those: when most links
+        // share a series key (first path segment / slug words), drop the outliers
+        if eps.len() >= 3 {
+            let key = |u: &str| {
+                let segs = path_segs(u);
+                if segs.len() >= 2 { segs[0].clone() } else { String::new() }
+            };
+            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for e in &eps {
+                *counts.entry(key(&e.url)).or_default() += 1;
+            }
+            if let Some((top, n)) = counts.iter().max_by_key(|x| x.1).map(|(k, n)| (k.clone(), *n))
+                && !top.is_empty()
+                && n * 2 > eps.len()
+                && n < eps.len()
+            {
+                eps.retain(|e| key(&e.url) == top);
+            }
         }
         let id = |u: &str| {
             path_segs(u)
@@ -556,8 +689,8 @@ impl WpSource {
                 .unwrap_or(0)
         };
         eps.sort_by(|a, b| {
-            (a.season, a.num)
-                .partial_cmp(&(b.season, b.num))
+            (a.dub, a.season, a.num)
+                .partial_cmp(&(b.dub, b.season, b.num))
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(id(&a.url).cmp(&id(&b.url)))
         });
@@ -566,12 +699,68 @@ impl WpSource {
                 e.num = (i + 1) as f32;
             }
         }
-        // the same number twice (sub + dub pages): keep both but number them apart in the label
+        // one entry per (track, season, number): mirrors of the same episode are servers, not episodes
+        let mut keys = HashSet::new();
+        eps.retain(|e| keys.insert((e.dub, e.season, (e.num * 100.0) as i64)));
+        relabel(&mut eps);
+        eps
+    }
+
+    /// Single-page sites (anime-sugoi): `<button data-ep="3" data-src="embed" data-src2="backup">`.
+    fn data_ep_episodes(&self, doc: &Html, page: &str) -> Vec<Episode> {
+        let mut eps: Vec<Episode> = Vec::new();
+        for el in doc.select(&sel_must("[data-ep]")) {
+            let v = el.value();
+            let has_src = ["data-src", "data-src2", "data-url", "data-embed", "data-video"].iter().any(|a| v.attr(a).is_some_and(|x| !x.trim().is_empty()));
+            if !has_src {
+                continue;
+            }
+            let label = text_of(el);
+            let Some(n) = v.attr("data-ep").and_then(|x| x.trim().parse::<f32>().ok()).or_else(|| parse_episode(&label).map(|x| x.1)) else { continue };
+            let dub = is_dub(&label);
+            if eps.iter().any(|e| e.num == n && e.dub == dub) {
+                continue;
+            }
+            eps.push(Episode { season: 1, num: n, label, url: format!("{}{EP_FRAG}{}", page.split('#').next().unwrap_or(page), fmt_num(n)), dub });
+        }
+        eps.sort_by(|a, b| (a.dub, a.num).partial_cmp(&(b.dub, b.num)).unwrap_or(std::cmp::Ordering::Equal));
         relabel(&mut eps);
         eps
     }
 
     // ------------------------------------------------------------ players
+
+    /// fairyanime: `<script src="/base/<id>/">` defines `var host = 'https://…/'` and builds player URLs as
+    /// `host + "playback/f/<id>/"` per server tab.
+    fn servers_from_loader_scripts(&self, html: &str, page: &str) -> Vec<Server> {
+        static SRC: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        static VAR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let src_re = SRC.get_or_init(|| Regex::new(r#"<script[^>]+src=["']([^"']+)["']"#).unwrap());
+        let var_re = VAR.get_or_init(|| Regex::new(r#"var\s+(\w+)\s*=\s*['"](https?://[^'"]+)['"]"#).unwrap());
+        let mut out: Vec<Server> = Vec::new();
+        for c in src_re.captures_iter(html) {
+            let Some(u) = abs(page, &c[1]) else { continue };
+            let path = url_path(&u).to_lowercase();
+            // dynamic same-site scripts only (not libraries)
+            if !crate::text::same_site(&u, page) || path.ends_with(".js") || path.contains("/wp-") || path.contains("cdn-cgi") {
+                continue;
+            }
+            let Ok(js) = self.http.get(&u, Some(page)) else { continue };
+            for v in var_re.captures_iter(&js) {
+                let (name, base) = (v[1].to_string(), v[2].to_string());
+                let cat = Regex::new(&format!(r#"\b{}\s*\+\s*["']([^"']+)["']"#, regex::escape(&name))).unwrap();
+                for m in cat.captures_iter(&js) {
+                    let url = format!("{base}{}", &m[1]);
+                    if out.iter().any(|s| s.kind == ServerKind::Direct(url.clone())) {
+                        continue;
+                    }
+                    let name = if out.is_empty() { "Main".to_string() } else { format!("Backup {}", out.len()) };
+                    out.push(Server { name, kind: ServerKind::Direct(url) });
+                }
+            }
+        }
+        out
+    }
 
     fn servers_from_html(&self, html: &str, ep_url: &str) -> Vec<Server> {
         let doc = Html::parse_document(html);
@@ -704,9 +893,11 @@ impl WpSource {
             ServerKind::DooPlay { post, typ, nume } => {
                 let b = &self.p.base;
                 let mut errs: Vec<String> = Vec::new();
+                // v1 first: what anime-waku's own player script calls (v2 is not served there, and every miss
+                // costs a slow round trip through Cloudflare)
                 for u in [
-                    format!("{b}/wp-json/dooplayer/v2/{post}/{typ}/{nume}"),
                     format!("{b}/wp-json/dooplayer/v1/post/{post}?type={typ}&source={nume}"),
+                    format!("{b}/wp-json/dooplayer/v2/{post}/{typ}/{nume}"),
                 ] {
                     tr.log(format!("  DooPlay GET {u}"));
                     match self.http.get(&u, Some(ep_url)) {
@@ -824,6 +1015,7 @@ impl WpSource {
             })
             .or_else(|| meta("og:description"))
             .or_else(|| meta("description"))
+            .map(|t| crate::text::strip_tags(&t))
             .unwrap_or_default();
 
         let genre_sel = sel(&self.p.genre_selector).unwrap_or_else(|| {
@@ -839,7 +1031,10 @@ impl WpSource {
             }
         }
 
-        let mut episodes = self.parse_episodes(&doc, url);
+        let mut episodes = self.data_ep_episodes(&doc, url);
+        if episodes.is_empty() {
+            episodes = self.parse_episodes(&doc, url);
+        }
         if episodes.is_empty() {
             // single-page sites: players live on the series page itself
             let servers = self.servers_from_html(html, url);
@@ -856,6 +1051,7 @@ impl WpSource {
                         num: n,
                         label: String::new(),
                         url: format!("{url}{PLAYER_FRAG}{i}"),
+                        dub: false,
                     })
                     .collect();
                 relabel(&mut episodes);
@@ -865,10 +1061,23 @@ impl WpSource {
                     num: 1.0,
                     label: "Watch".into(),
                     url: url.to_string(),
+                    dub: false,
                 });
             }
         }
 
+        // a page that is the Thai-dub edition of a show (fairyanime "… เสียงไทย"): all its episodes are dubbed
+        if !episodes.iter().any(|e| e.dub) && is_dub(&title) && !title.contains("ซับ") {
+            for e in &mut episodes {
+                e.dub = true;
+            }
+        }
+        if episodes.iter().any(|e| e.dub) && !tags.iter().any(|t| t == "Dub") {
+            tags.insert(0, "Dub".into());
+        }
+        if episodes.iter().any(|e| !e.dub) && !tags.iter().any(|t| t == "Sub") {
+            tags.insert(0, "Sub".into());
+        }
         AnimeDetail {
             source: self.p.id.clone(),
             url: url.to_string(),
@@ -889,17 +1098,25 @@ fn relabel(eps: &mut [Episode]) {
         } else {
             format!("Episode {}", fmt_num(e.num))
         };
-        let low = e.label.to_lowercase();
-        let extra = if low.contains("พากย์") || low.contains("dub") {
-            " (Dub)"
-        } else {
-            ""
-        };
-        e.label = format!("{base}{extra}");
+        e.label = base;
     }
 }
 
 impl Source for WpSource {
+    fn warm(&self) {
+        if !self.p.sitemap_index {
+            return;
+        }
+        let stale = std::fs::metadata(self.index_file())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+            .is_none_or(|age| age > Duration::from_secs(12 * 3600));
+        if stale {
+            let _ = self.title_index(true);
+        }
+    }
+
     fn id(&self) -> &str {
         &self.p.id
     }
@@ -977,13 +1194,13 @@ impl Source for WpSource {
                     }
                 }
             }
-            if cards.len() + ep_hits.len() == before {
-                break;
+            if cards.len() + ep_hits.len() == before || cards.len() - before.min(cards.len()) < 12 {
+                break; // a second page only when the first one was full
             }
         }
 
-        // episode hits -> their series page
-        ep_hits.truncate(6);
+        // episode hits -> their series page (only when the search found few series pages itself)
+        ep_hits.truncate(if cards.len() < 3 { 6 } else { 0 });
         let from_eps: Vec<Vec<AnimeCard>> = par_map(&ep_hits, 6, |e| {
             self.get(e)
                 .map(|h| {
@@ -1015,9 +1232,11 @@ impl Source for WpSource {
                 .filter(|e| !cards.iter().any(|c| c.url == e.0))
                 .take(10)
                 .collect();
-            let loaded: Vec<Option<AnimeCard>> =
-                par_map(&missing, 8, |e| self.detail(&e.0).ok().map(|d| d.card()));
-            cards.extend(loaded.into_iter().flatten());
+            // straight from the index (no page loads: the poster comes from the metadata / when opened)
+            for e in missing {
+                let title = self.strip_title(&e.1);
+                cards.push(AnimeCard { source: self.p.id.clone(), url: e.0.clone(), title, poster: None, badge: None });
+            }
         }
 
         if cards.is_empty()
@@ -1063,6 +1282,31 @@ impl Source for WpSource {
     }
 
     fn servers(&self, episode_url: &str) -> Result<Vec<Server>> {
+        if let Some((page, n)) = episode_url.split_once(EP_FRAG) {
+            let html = self.get(page)?;
+            let doc = Html::parse_document(&html);
+            let want: f32 = n.parse().unwrap_or(-1.0);
+            let mut list: Vec<Server> = Vec::new();
+            for el in doc.select(&sel_must("[data-ep]")) {
+                let v = el.value();
+                let num = v.attr("data-ep").and_then(|x| x.trim().parse::<f32>().ok()).or_else(|| parse_episode(&text_of(el)).map(|x| x.1));
+                if num.is_none_or(|x| (x - want).abs() > 0.01) {
+                    continue;
+                }
+                for (i, a) in ["data-src", "data-src2", "data-src3", "data-url", "data-embed", "data-video"].iter().enumerate() {
+                    if let Some(u) = v.attr(a).and_then(|x| url_from_value(x, page))
+                        && !list.iter().any(|s| s.kind == ServerKind::Direct(u.clone()))
+                    {
+                        let name = if i == 0 { "Main".to_string() } else { format!("Backup {i}") };
+                        list.push(Server { name, kind: ServerKind::Direct(u) });
+                    }
+                }
+            }
+            if list.is_empty() {
+                bail!("episode {n} not found on {page}");
+            }
+            return Ok(list);
+        }
         let (page, only) = match episode_url.split_once(PLAYER_FRAG) {
             Some((p, i)) => (p, i.parse::<usize>().ok()),
             None => (episode_url, None),
@@ -1073,6 +1317,16 @@ impl Source for WpSource {
             list = list.into_iter().nth(i).into_iter().collect();
         }
         if list.is_empty() {
+            list = self.servers_from_loader_scripts(&html, page);
+        }
+        if list.is_empty() {
+            // players loaded by script (anifume: `$.ajax({url: …})` fills the player box): resolve the page itself
+            let txt = crate::media::normalize(&html);
+            if txt.contains("$.ajax") || txt.contains("fetch(") || txt.contains("jwplayer") || txt.contains("sources") {
+                list.push(Server { name: "Main".into(), kind: ServerKind::Direct(page.to_string()) });
+            }
+        }
+        if list.is_empty() {
             bail!("no player found on {page} (markup unknown — adjust sources.toml)");
         }
         Ok(list)
@@ -1080,6 +1334,7 @@ impl Source for WpSource {
 
     fn resolve(&self, server: &Server, episode_url: &str, tr: &Trace) -> Result<Stream> {
         let page = episode_url.split(PLAYER_FRAG).next().unwrap_or(episode_url);
+        let page = page.split(EP_FRAG).next().unwrap_or(page);
         let embed = self.resolve_embed(server, page, tr)?;
         tr.log(format!("  embed: {}", truncate(&embed, 140)));
         let base = Stream {
@@ -1088,22 +1343,24 @@ impl Source for WpSource {
             variants: Vec::new(),
             page: page.to_string(),
             rank: StreamRank::Unknown,
+            headers: Vec::new(),
+            hls: false,
         };
-        Ok(match sniff_stream(&self.http, &embed, page, tr) {
-            Some((urls, found_on)) => Stream {
-                variants: find_variants(&self.http, &urls, &found_on),
-                page: found_on,
-                rank: StreamRank::Direct,
-                ..base
-            },
-            None => Stream {
-                variants: vec![Variant {
-                    height: None,
-                    url: embed.clone(),
-                }],
-                rank: rank_of_embed(&embed),
-                ..base
-            },
+        let referer = if embed == page { format!("{}/", self.p.base) } else { page.to_string() };
+        if let Some(m) = crate::media::find_media(&self.http, &embed, &referer, tr) {
+            let hls = m.urls.iter().any(|u| u.hls);
+            let urls: Vec<String> = m.urls.iter().map(|u| u.url.clone()).collect();
+            let mut variants: Vec<Variant> = m.urls.iter().map(|u| Variant { height: u.height, url: u.url.clone() }).collect();
+            // sibling qualities (`…-1080.txt` -> `…-720.txt`) only for plain named playlists
+            if variants.len() == 1 && variants[0].height.is_some() {
+                variants = find_variants(&self.http, &urls, &m.page);
+            }
+            return Ok(Stream { variants, page: m.page, rank: StreamRank::Direct, headers: m.headers, hls, ..base });
+        }
+        Ok(Stream {
+            variants: vec![Variant { height: None, url: embed.clone() }],
+            rank: rank_of_embed(&embed),
+            ..base
         })
     }
 }
@@ -1198,5 +1455,41 @@ mod tests {
         assert!(!h.is_series_url("https://www.hareshi.net/category/x/"));
         assert!(!h.is_series_url("https://other.com/one-piece/"));
         assert!(h.is_episode_url("https://www.hareshi.net/one-piece-ep-5/", ""));
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    #[test]
+    fn junk_titles_rejected() {
+        assert!(!title_like("8.3 HD"));
+        assert!(!title_like("8.3"));
+        assert!(title_like("Black Clover Season 2"));
+        let html = r#"<a href="https://x.net/cyber-2026/"><div class="elementor-heading-title">8.3</div><div class="elementor-icon"><svg></svg></div><div class="elementor-heading-title">HD</div></a>"#;
+        let doc = Html::parse_fragment(html);
+        let a = doc.select(&sel_must("a")).next().unwrap();
+        assert_eq!(best_title(a, a), "");
+    }
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use crate::profile::parse_sources;
+
+    fn src(id: &str) -> WpSource {
+        let p = parse_sources(crate::profile::DEFAULT_SOURCES).unwrap().into_iter().find(|p| p.id == id).unwrap();
+        WpSource::new(p, Http::new(5).unwrap()).unwrap()
+    }
+
+    /// Real pages saved by the dev agent (skipped when the fixture is missing).
+    #[test]
+    fn sugoi_home_cards() {
+        let Ok(html) = std::fs::read_to_string("/tmp/claude-0/fx/sugoi.html") else { return };
+        for c in src("sugoi").extract_cards(&html, "https://anime-sugoi.net/", false).iter().take(40) {
+            println!("{} | {} | {:?}", c.title, c.url, c.poster);
+        }
     }
 }

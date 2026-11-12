@@ -62,11 +62,24 @@ pub fn setup(ctx: &egui::Context) {
         w.bg_stroke = Stroke::NONE;
     }
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
+    // an outline so unchecked boxes, text fields and combo boxes can be seen on the dark panels,
+    // turning to the accent colour under the pointer
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x4a, 0x4c, 0x55));
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT_HI);
+    v.widgets.open.bg_stroke = Stroke::new(1.0, ACCENT);
+    v.menu_corner_radius = CornerRadius::same(8);
+    v.window_corner_radius = CornerRadius::same(10);
+    v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(140) };
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     v.widgets.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     v.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
-    ctx.set_visuals(v);
+    // Always the dark look, whatever the Windows theme is: egui keeps one style per theme and follows the system
+    // by default, so on a light-mode PC the widgets (combo boxes, sliders, menus) came out white on our dark pages.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -208,6 +221,14 @@ fn setup_fonts(ctx: &egui::Context) {
             .unwrap_or_default(),
     );
     f.families.insert(FontFamily::Name(BOLD.into()), bold_stack);
+
+    // monospace (player Info box): Thai / CJK fall back to the body fonts instead of showing boxes
+    let mono = f.families.entry(FontFamily::Monospace).or_default();
+    for k in ["body", "cjk"] {
+        if f.font_data.contains_key(k) && !mono.iter().any(|x| x == k) {
+            mono.push(k.into());
+        }
+    }
 
     // icons (inserted as 2nd fallback of the proportional stack)
     egui_phosphor::add_to_fonts(&mut f, egui_phosphor::Variant::Regular);

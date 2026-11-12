@@ -12,7 +12,12 @@
 #   sitemap_index              : true = สร้าง index ชื่อเรื่องจาก sitemap (ค้นหาแม่นขึ้น)
 #
 # เว็บเปลี่ยนโดเมนบ่อย → แก้แค่ base ก็พอ
+#
+# revision: เลขรุ่นของกฎ — แอปดึงไฟล์นี้จาก GitHub (crates/waku-core/sources.default.toml บน branch main)
+# ถ้าเลขใหม่กว่าในเครื่องจะอัปเดตให้เอง (ถ้าไม่ได้แก้ไฟล์เอง) → แก้กฎแล้ว "เพิ่มเลข" ทุกครั้งก่อน push
 # ─────────────────────────────────────────────────────────────────────────────
+
+revision = 1
 
 [[source]]
 id = "waku"
@@ -78,8 +83,8 @@ title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไท�
 id = "hareshi"
 name = "Hareshi"
 base = "https://www.hareshi.net"
-enabled = true
-note = "heuristic — markup not verified yet (may need a custom adapter if it is an SPA)"
+enabled = false
+note = "turned off: hareshi.net is now a directory of licensed streaming services (no videos to play)"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'

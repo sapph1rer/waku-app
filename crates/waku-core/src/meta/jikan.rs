@@ -51,6 +51,7 @@ pub fn parse_page(v: &Value) -> Result<(Vec<EpMeta>, bool)> {
                 aired,
                 length: None,
                 source: "jikan".into(),
+                summary: None,
             })
         })
         .collect();
