@@ -288,6 +288,9 @@ fn walk(http: &Http, url: &str, referer: &str, depth: u8, seen: &mut HashSet<Str
         return walk(http, &format!("{host}/playback/v/{id}/"), referer, depth, seen, xhr, tr);
     }
     tr.log(format!("  open {}", truncate(url, 140)));
+    if let Some((local, height)) = crate::gated::resolve(url, referer, &|s| tr.log(s)) {
+        return Some(Media { urls: vec![MediaUrl { url: local, height, hls: true }], page: url.into(), headers: vec![] });
+    }
     if let Some(m) = tonytonychopper(http, url, tr) {
         return Some(m);
     }

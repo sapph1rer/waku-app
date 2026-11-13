@@ -675,7 +675,8 @@ impl WakuApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .pivot(Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
             .default_width(420.0)
             .show(ctx, |ui| {
                 ui.label(
@@ -798,12 +799,14 @@ impl WakuApp {
         let over = ctx.pointer_hover_pos().zip(prev).is_some_and(|(pt, r)| r.expand(8.0).contains(pt));
         let typing = ctx.memory(|m| m.has_focus(id.with("draft")));
         let alpha = ctx.animate_bool_with_time(id.with("show"), over || typing || ctx.is_being_dragged(id), 0.2);
-        let area = egui::Area::new(id).anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -96.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        // draggable anywhere (the position is remembered by egui and kept on screen); starts bottom right
+        let start = ctx.content_rect().right_bottom() - vec2(16.0 + 324.0, 96.0 + 120.0);
+        let area = egui::Area::new(id).default_pos(start).movable(true).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
             ui.multiply_opacity(0.35 + 0.65 * alpha);
             Frame::new().fill(BAR.gamma_multiply(0.94)).stroke(egui::Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(12)).show(ui, |ui| {
                 ui.set_width(300.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}  {}", icon::USERS_THREE, tr("Watch party", "ดูด้วยกัน"))).font(bold(15.0)).color(ACCENT_HI));
+                    ui.label(RichText::new(format!("{}  {}", icon::USERS_THREE, tr("Watch party", "ดูด้วยกัน"))).font(bold(15.0)).color(ACCENT_HI)).on_hover_text(tr("Drag anywhere to move", "ลากเพื่อย้าย"));
                     ui.label(RichText::new(format!("· {}", p.members.len().max(1))).color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if widgets::ghost_button(ui, icon::SIGN_OUT).on_hover_text(tr("Leave", "ออกจากห้อง")).clicked() {

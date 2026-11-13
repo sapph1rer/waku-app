@@ -1194,6 +1194,10 @@ impl WakuApp {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
+        // one column that scrolls when the window is too short (small screens), the bottom group pinned to
+        // the bottom edge when there is room
+        let full = ui.available_height();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(14.0);
             // app logo (round, with an accent ring); click = home
@@ -1234,23 +1238,9 @@ impl WakuApp {
                 }
                 ui.add_space(4.0);
             }
-        });
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            ui.add_space(14.0);
-            let r = widgets::sidebar_item(
-                ui,
-                icon::GEAR_SIX,
-                tr("Settings", "ตั้งค่า"),
-                self.page == Page::Settings,
-            );
-            if r.clicked() {
-                self.go(Page::Settings);
-            }
-            ui.add_space(4.0);
-            let in_party = self.party.is_some();
-            if widgets::sidebar_item(ui, icon::USERS_THREE, tr("Party", "ดูด้วยกัน"), in_party || self.party_ui.open).clicked() && !in_party {
-                self.party_ui.open = !self.party_ui.open;
-            }
+            // bottom group (online indicator, Party, Settings): 20 + 62 + 62 + 14
+            let used = ui.min_rect().height();
+            ui.add_space((full - used - 158.0).max(10.0));
             // tiny online indicator
             let ok = self.health.values().filter(|h| h.ok).count();
             let total = self.mgr.sources().len();
@@ -1280,6 +1270,17 @@ impl WakuApp {
                 self.refresh_health();
                 self.go(Page::Sources);
             }
+            ui.add_space(4.0);
+            let in_party = self.party.is_some();
+            if widgets::sidebar_item(ui, icon::USERS_THREE, tr("Party", "ดูด้วยกัน"), in_party || self.party_ui.open).clicked() && !in_party {
+                self.party_ui.open = !self.party_ui.open;
+            }
+            ui.add_space(4.0);
+            if widgets::sidebar_item(ui, icon::GEAR_SIX, tr("Settings", "ตั้งค่า"), self.page == Page::Settings).clicked() {
+                self.go(Page::Settings);
+            }
+            ui.add_space(14.0);
+        });
         });
     }
 
