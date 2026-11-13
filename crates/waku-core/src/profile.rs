@@ -35,6 +35,8 @@ pub struct SiteProfile {
     pub sitemap_index: bool,
     /// Extra first path segments that are never anime pages.
     pub ignore_paths: Vec<String>,
+    /// 18+ (hentai): loaded only when "Adult sources" is on in Settings.
+    pub adult: bool,
 }
 
 impl Default for SiteProfile {
@@ -57,6 +59,7 @@ impl Default for SiteProfile {
             title_strip: String::new(),
             sitemap_index: false,
             ignore_paths: Vec::new(),
+            adult: false,
         }
     }
 }
@@ -206,7 +209,7 @@ mod tests {
 
     #[test]
     fn revisions() {
-        assert_eq!(sources_revision(DEFAULT_SOURCES), 1);
+        assert_eq!(sources_revision(DEFAULT_SOURCES), 2);
         assert_eq!(sources_revision("[[source]]\nid='x'\nbase='https://x'"), 0);
         assert_eq!(text_hash("a\r\nb"), text_hash("a\nb"), "line endings do not count as an edit");
         assert!(sources_url("sapph1rer/waku-app/").ends_with("/sapph1rer/waku-app/main/crates/waku-core/sources.default.toml"));
@@ -215,8 +218,10 @@ mod tests {
     #[test]
     fn defaults_parse() {
         let v = parse_sources(DEFAULT_SOURCES).unwrap();
-        assert_eq!(v.len(), 6);
+        assert_eq!(v.len(), 9);
         assert_eq!(v[0].id, "waku");
+        // the 18+ ones are marked (they load only when turned on)
+        assert_eq!(v.iter().filter(|p| p.adult).map(|p| p.id.as_str()).collect::<Vec<_>>(), ["akih", "alphahen", "animeh"]);
         assert!(v.iter().all(|p| !p.base.ends_with('/')));
         for p in &v {
             for re in [&p.series_path, &p.episode_path, &p.title_strip] {

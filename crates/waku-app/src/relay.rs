@@ -28,7 +28,7 @@ pub const DEFAULT_SERVER: &str = "https://ntfy.sh";
 const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const ROUNDS: u32 = 210_000;
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -268,6 +268,13 @@ fn send_loop(rx: Receiver<Wire>, url: String, key: [u8; 32], me: u64, seq: Arc<A
         }
         for w in coalesce(batch) {
             let bye = matches!(w, Wire::Bye { .. });
+            // clock probes carry the moment they really leave (not when they were queued)
+            let mut w = w;
+            match &mut w {
+                Wire::Ping { t0, .. } => *t0 = now_ms(),
+                Wire::Pong { hs, .. } => *hs = now_ms(),
+                _ => {}
+            }
             let e = Envelope { from: me, seq: seq.fetch_add(1, Ordering::Relaxed) + 1, at: now_ms(), w };
             let body = seal(&key, &e);
             let mut tries = 0;
@@ -368,13 +375,13 @@ mod tests {
 
     #[test]
     fn merging() {
-        let st = |p: f64| Wire::State { ep_url: "e".into(), pos: p, paused: false };
+        let st = |p: f64| Wire::State { ep_url: "e".into(), pos: p, paused: false, at: 0 };
         let chat = Wire::Chat { name: "a".into(), text: "x".into() };
         let out = coalesce(vec![st(1.0), chat.clone(), st(2.0), st(3.0)]);
         assert_eq!(out.len(), 2);
         assert!(matches!(out[1], Wire::State { pos, .. } if pos == 3.0));
         // a load after the positions makes them moot
-        let ld = Wire::Load { item: crate::party::tests::item(), pos: 0.0, paused: false };
+        let ld = Wire::Load { item: crate::party::tests::item(), pos: 0.0, paused: false, at: 0 };
         let out = coalesce(vec![st(1.0), ld, chat]);
         assert_eq!(out.len(), 2);
         assert!(matches!(out[0], Wire::Load { .. }));

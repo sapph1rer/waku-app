@@ -99,6 +99,8 @@ pub struct Settings {
     pub update_repo: String,
     /// look for a new version of the app on start
     pub check_updates: bool,
+    /// 18+ (hentai) sources: off unless the user turned them on (and said they are 18 or older)
+    pub adult_sources: bool,
     /// take new sources rules from the repository by themselves (when sources.toml was not edited by hand)
     pub auto_update_sources: bool,
     /// Resume episodes from where they were left.
@@ -144,6 +146,7 @@ impl Default for Settings {
             party_server: String::new(),
             update_repo: "sapph1rer/waku-app".into(),
             check_updates: true,
+            adult_sources: false,
             auto_update_sources: true,
             resume: true,
             recent_searches: Vec::new(),

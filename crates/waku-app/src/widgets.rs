@@ -896,3 +896,18 @@ pub fn health_color(ok: Option<bool>, ms: u128) -> Color32 {
         Some(true) => GOOD,
     }
 }
+
+/// An on/off switch (pill with a knob that slides).
+pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(42.0, 24.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let k = ui.ctx().animate_bool_with_time(resp.id, *on, 0.15);
+    let fill = lerp_color(PANEL_HI, ACCENT, k);
+    ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
+    let x = egui::lerp(rect.left() + 12.0..=rect.right() - 12.0, k);
+    ui.painter().circle_filled(pos2(x, rect.center().y), 9.0, Color32::WHITE);
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}

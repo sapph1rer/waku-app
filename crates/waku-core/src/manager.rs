@@ -42,9 +42,40 @@ pub struct SourceManager {
 
 impl SourceManager {
     /// Load `sources.toml` from the config folder (created on first run).
+    /// 18+ sources come along only when the user turned them on (Settings).
     pub fn load() -> Self {
+        let adult = crate::store::Settings::load().adult_sources;
+        let mut m = Self::load_all();
+        if !adult {
+            m.sources.retain(|s| !m.profiles.iter().any(|p| p.adult && p.id == s.id()));
+        }
+        m
+    }
+
+    /// How many 18+ sources the rules have (loaded or not).
+    pub fn adult_count(&self) -> usize {
+        self.profiles.iter().filter(|p| p.adult && p.enabled).count()
+    }
+
+    /// Is this an 18+ source (whether it is loaded or not)?
+    pub fn is_adult(&self, id: &str) -> bool {
+        self.profiles.iter().any(|p| p.adult && p.id == id)
+    }
+
+    fn load_all() -> Self {
         match load_sources(&sources_path()) {
-            Ok(p) => Self::from_profiles(p),
+            Ok(mut p) => {
+                // 18+ sources a sources.toml from before they existed lacks (a hand-edited file is not
+                // replaced by newer rules): taken from the built-in defaults
+                if let Ok(defaults) = crate::profile::parse_sources(crate::profile::DEFAULT_SOURCES) {
+                    for d in defaults.into_iter().filter(|d| d.adult) {
+                        if !p.iter().any(|x| x.id == d.id) {
+                            p.push(d);
+                        }
+                    }
+                }
+                Self::from_profiles(p)
+            }
             Err(e) => {
                 let mut m = Self::from_profiles(
                     crate::profile::parse_sources(crate::profile::DEFAULT_SOURCES)

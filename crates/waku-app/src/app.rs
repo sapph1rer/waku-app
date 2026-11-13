@@ -272,6 +272,8 @@ pub struct WakuApp {
     pub meta_queue: Sender<(String, String)>,
     /// series pages already identified once more by the names in their synopsis
     pub hint_tried: std::collections::HashSet<String>,
+    /// the "are you 18?" question of the 18+ sources switch is up
+    pub adult_confirm: bool,
     /// cards without a picture whose series page was looked at for one
     pub poster_tried: std::collections::HashSet<String>,
     pub identify: Option<crate::metaui::IdentifyState>,
@@ -410,6 +412,7 @@ impl WakuApp {
             meta_pending: Default::default(),
             meta_queue: crate::metaui::start_meta_worker(&cc.egui_ctx, tx_meta),
             hint_tried: Default::default(),
+            adult_confirm: false,
             poster_tried: Default::default(),
             identify: None,
             identify_seq: 0,
@@ -530,6 +533,11 @@ impl WakuApp {
         self.player_ok = None;
         let cmd = self.settings.player_cmd.clone();
         self.spawn(move |_| Msg::PlayerCheck(player::player_available(&cmd)));
+    }
+
+    /// Cards of 18+ sites stay out of sight (Continue Watching, My List, History) while those are turned off.
+    pub fn shown_source(&self, source: &str) -> bool {
+        self.settings.adult_sources || !self.mgr.is_adult(source)
     }
 
     pub fn reload_sources(&mut self) {

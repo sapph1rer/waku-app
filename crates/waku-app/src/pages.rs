@@ -98,7 +98,8 @@ impl WakuApp {
         if featured.is_empty() && self.listings.get(&home).is_some_and(|l| !l.loading) {
             let order: Vec<String> = self.settings.source_order.clone();
             for id in order.iter().filter(|id| **id != home) {
-                if self.mgr.get(id).is_none() {
+                // (an 18+ site never stands in for the featured strip)
+                if self.mgr.get(id).is_none() || self.mgr.is_adult(id) {
                     continue;
                 }
                 self.ensure_latest(id);
@@ -315,9 +316,9 @@ impl WakuApp {
                 bottom: 0,
             })
             .show(ui, |ui| {
-                if !self.lib.history.is_empty() {
+                let hist: Vec<_> = self.lib.history.iter().filter(|h| self.shown_source(&h.card.source)).take(20).cloned().collect();
+                if !hist.is_empty() {
                     section_title(ui, tr("Continue Watching", "ดูต่อ"));
-                    let hist: Vec<_> = self.lib.history.iter().take(20).cloned().collect();
                     let mut open = None;
                     card_row(ui, "continue", &hist, |ui, h| {
                         let sub = format!(
@@ -661,7 +662,7 @@ impl WakuApp {
             );
             return;
         }
-        let cards = self.lib.my_list.clone();
+        let cards: Vec<_> = self.lib.my_list.iter().filter(|c| self.shown_source(&c.source)).cloned().collect();
         self.grid_of(ui, &cards, true);
     }
 
@@ -690,7 +691,7 @@ impl WakuApp {
             );
             return;
         }
-        let hist = self.lib.history.clone();
+        let hist: Vec<_> = self.lib.history.iter().filter(|h| self.shown_source(&h.card.source)).cloned().collect();
         let mut open = None;
         card_grid(ui, &hist, |ui, h| {
             let sub = format!(
@@ -1014,6 +1015,8 @@ impl WakuApp {
                 .color(MUTED),
             );
             ui.add_space(8.0);
+            self.adult_toggle(ui);
+            ui.add_space(8.0);
 
             let mut order: Vec<String> = self.settings.source_order.clone();
             for s in self.mgr.sources() {
@@ -1129,4 +1132,65 @@ pub fn open_path(p: &std::path::Path) {
 
 fn widgets_card_w() -> f32 {
     crate::widgets::CARD_W
+}
+
+impl WakuApp {
+    /// Settings › Sources: the 18+ (hentai) sources switch. Turning it on asks for the age first; either way the
+    /// sources are loaded again (off = only the main ones connect at start).
+    fn adult_toggle(&mut self, ui: &mut Ui) {
+        let n = self.mgr.adult_count();
+        let mut on = self.settings.adult_sources;
+        ui.horizontal(|ui| {
+            if widgets::switch(ui, &mut on).changed() {
+                if on {
+                    on = false;
+                    self.adult_confirm = true; // asked below
+                } else {
+                    self.settings.adult_sources = false;
+                    self.settings.save();
+                    self.reload_sources();
+                }
+            }
+            ui.vertical(|ui| {
+                ui.label(RichText::new(crate::trf!("18+ sources (hentai) · {n}", "แหล่ง 18+ (hentai) · {n} แหล่ง")).strong());
+                ui.label(
+                    RichText::new(tr(
+                        "Off: only the main sources connect when the app opens, and 18+ titles stay out of Continue Watching / My List / History.",
+                        "ปิด: เปิดแอปจะเชื่อมต่อแค่แหล่งหลัก และเรื่อง 18+ จะไม่โผล่ใน ดูต่อ / รายการของฉัน / ประวัติ",
+                    ))
+                    .size(12.0)
+                    .color(MUTED),
+                );
+            });
+        });
+        if self.adult_confirm {
+            let mut close = false;
+            let m = egui::Modal::new(egui::Id::new("adult-confirm"))
+                .frame(Frame::new().fill(PANEL).stroke(egui::Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(16)).inner_margin(Margin::same(22)))
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(420.0);
+                    ui.label(RichText::new(format!("{}  {}", icon::WARNING, tr("Adult content", "เนื้อหาสำหรับผู้ใหญ่"))).font(bold(18.0)).color(WARN));
+                    ui.add_space(8.0);
+                    ui.label(tr(
+                        "These sources show sexually explicit anime (hentai). Turn them on only if you are 18 or older and it is legal where you live.",
+                        "แหล่งเหล่านี้มีอนิเมะที่มีเนื้อหาทางเพศโจ่งแจ้ง (hentai) เปิดใช้เฉพาะเมื่อคุณอายุ 18 ปีขึ้นไป และถูกกฎหมายในที่ที่คุณอยู่",
+                    ));
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if widgets::play_button(ui, tr("I am 18 or older — turn on", "ฉันอายุ 18 ปีขึ้นไป — เปิดเลย")).clicked() {
+                            self.settings.adult_sources = true;
+                            self.settings.save();
+                            close = true;
+                            self.reload_sources();
+                        }
+                        if widgets::secondary_button(ui, tr("Cancel", "ยกเลิก")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close || m.should_close() {
+                self.adult_confirm = false;
+            }
+        }
+    }
 }

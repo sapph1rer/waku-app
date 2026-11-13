@@ -17,7 +17,7 @@
 # ถ้าเลขใหม่กว่าในเครื่องจะอัปเดตให้เอง (ถ้าไม่ได้แก้ไฟล์เอง) → แก้กฎแล้ว "เพิ่มเลข" ทุกครั้งก่อน push
 # ─────────────────────────────────────────────────────────────────────────────
 
-revision = 1
+revision = 2
 
 [[source]]
 id = "waku"
@@ -88,3 +88,43 @@ note = "turned off: hareshi.net is now a directory of licensed streaming service
 latest_paths = ["/"]
 search_path = "/?s={q}"
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|ยังไม่จบ|จบแล้ว).*$'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 18+ (hentai) — adult = true: ใช้เฉพาะเมื่อเปิด "แหล่ง 18+" ในหน้าตั้งค่า (ปิดไว้เป็นค่าเริ่มต้น)
+# ยังไม่ได้ตรวจ markup จริง — ใช้ heuristic ไปก่อน (Settings › Test)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[source]]
+id = "akih"
+name = "Aki-H"
+base = "https://aki-h.com"
+enabled = true
+adult = true
+note = "18+ — series /<slug>/, episodes /episode/<slug>/ (not verified yet)"
+latest_paths = ["/latest/", "/"]
+search_path = "/?s={q}"
+episode_path = '^/episode/[^/]+/?$'
+ignore_paths = ["latest", "popular", "az-list", "genre", "episode"]
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'
+
+[[source]]
+id = "alphahen"
+name = "Alpha-Hen"
+base = "https://alpha-hen.com"
+enabled = true
+adult = true
+note = "18+ — heuristic (not verified yet)"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'
+
+[[source]]
+id = "animeh"
+name = "Anime-H"
+base = "https://anime-h.net"
+enabled = true
+adult = true
+note = "18+ — heuristic (not verified yet)"
+latest_paths = ["/"]
+search_path = "/?s={q}"
+title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'
