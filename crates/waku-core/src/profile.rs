@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn revisions() {
-        assert_eq!(sources_revision(DEFAULT_SOURCES), 3);
+        assert_eq!(sources_revision(DEFAULT_SOURCES), 4);
         assert_eq!(sources_revision("[[source]]\nid='x'\nbase='https://x'"), 0);
         assert_eq!(text_hash("a\r\nb"), text_hash("a\nb"), "line endings do not count as an edit");
         assert!(sources_url("sapph1rer/waku-app/").ends_with("/sapph1rer/waku-app/main/crates/waku-core/sources.default.toml"));

@@ -322,6 +322,8 @@ GUI: โลโก้แอป (`crates/waku-app/assets`, ฝังใน exe ด
   (ครั้งแรกมีรอบเดียวที่แชท B→A ไม่ถึง A อธิบายไม่ได้ ทำซ้ำไม่ได้อีก — เพิ่ม log `party: recv seq N …` ใน `WAKU_HTTP_LOG` ไว้ตามต่อ)
 - หมายเหตุทดสอบ: สองหน้าต่างใช้ settings เดียวกัน ชื่อแชทเป็น "Viewer" ทั้งคู่
 
+- **ปิด aki-h และ anime-h** (`enabled = false`, rules revision 4) เพราะเล่นวิดีโอไม่ได้ — โค้ดและโปรไฟล์ยังอยู่ เปิดกลับด้วย `enabled = true` เมื่อมีทางแก้ (ลองแก้ที่ `waku-browser` sniff ก่อน)
+
 ### ยังไม่ได้ทดสอบ / ปัญหาที่รู้
 
 - Anime-Waku (Psyren, Dark Machine), FairyAnime: เล่นจากตัวเล่นหลัก 1080p บน Windows ได้แล้ว; ปุ่ม ✕ "ดูต่อ" บน Windows และเมนูความละเอียดยังไม่ได้กดทดสอบผ่านรีโมต

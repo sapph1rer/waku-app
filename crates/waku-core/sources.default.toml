@@ -17,7 +17,7 @@
 # ถ้าเลขใหม่กว่าในเครื่องจะอัปเดตให้เอง (ถ้าไม่ได้แก้ไฟล์เอง) → แก้กฎแล้ว "เพิ่มเลข" ทุกครั้งก่อน push
 # ─────────────────────────────────────────────────────────────────────────────
 
-revision = 3
+revision = 4
 
 [[source]]
 id = "waku"
@@ -97,9 +97,9 @@ title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไท�
 id = "akih"
 name = "Aki-H"
 base = "https://aki-h.com"
-enabled = true
+enabled = false
 adult = true
-note = "18+ — series /<slug>/, episodes /watch/<id>/ (listed on the series page) — verified 13 Nov 2026"
+note = "turned off: videos (aki-h.stream player) do not play yet; listing/episodes work. 18+ — series /<slug>/, episodes /watch/<id>/ (listed on the series page) — verified 13 Nov 2026"
 latest_paths = ["/latest/", "/"]
 search_path = "/?s={q}"
 episode_path = '^/watch/[^/]+/?$'
@@ -123,9 +123,9 @@ title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไท�
 id = "animeh"
 name = "Anime-H"
 base = "https://anime-h.net"
-enabled = true
+enabled = false
 adult = true
-note = "18+ — series /<id>/<slug>, episodes /play/<id>/<slug>-ตอนที่-N-ซับไทย — verified 13 Nov 2026"
+note = "turned off: videos (aki-h.stream player) do not play yet; listing/episodes work. 18+ — series /<id>/<slug>, episodes /play/<id>/<slug>-ตอนที่-N-ซับไทย — verified 13 Nov 2026"
 latest_paths = ["/"]
 search_path = "/?s={q}"
 series_path = '^/\d+/[^/]+/?$'
