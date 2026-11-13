@@ -209,10 +209,17 @@ pub fn start(server: &str, code: &str, tx: Sender<Msg>, ctx: egui::Context) -> R
                                 if let Some(id) = v["id"].as_str() {
                                     since = Some(id.to_string());
                                 }
-                                let Some(e) = v["message"].as_str().and_then(|m| open(&key, m)) else { continue };
+                                let Some(e) = v["message"].as_str().and_then(|m| open(&key, m)) else {
+                                    waku_core::http::note("party: recv: message not decryptable (wrong key / foreign)");
+                                    continue;
+                                };
                                 if e.from == me || !guard.accept(&e, now_ms()) {
+                                    if e.from != me {
+                                        waku_core::http::note(&format!("party: recv: dropped seq {} (replay/old)", e.seq));
+                                    }
                                     continue;
                                 }
+                                waku_core::http::note(&format!("party: recv seq {} {}", e.seq, format!("{:?}", e.w).chars().take(40).collect::<String>()));
                                 let _ = tx.send(Msg::Party(e.w));
                                 ctx.request_repaint();
                             }

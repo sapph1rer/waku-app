@@ -17,7 +17,7 @@
 # ถ้าเลขใหม่กว่าในเครื่องจะอัปเดตให้เอง (ถ้าไม่ได้แก้ไฟล์เอง) → แก้กฎแล้ว "เพิ่มเลข" ทุกครั้งก่อน push
 # ─────────────────────────────────────────────────────────────────────────────
 
-revision = 2
+revision = 3
 
 [[source]]
 id = "waku"
@@ -44,7 +44,6 @@ enabled = true
 note = "WordPress + Elementor — title pages are /<slug>/, player markup not verified yet"
 latest_paths = ["/"]
 search_path = "/?s={q}"
-series_path = '^/[^/]+/?$'
 episode_path = ""
 title_strip = '\s*(EP\.?\s*\d.*|ตอนที่.*|ซับไทย.*|พากย์ไทย.*)$'
 sitemap_index = true
@@ -100,22 +99,24 @@ name = "Aki-H"
 base = "https://aki-h.com"
 enabled = true
 adult = true
-note = "18+ — series /<slug>/, episodes /episode/<slug>/ (not verified yet)"
+note = "18+ — series /<slug>/, episodes /watch/<id>/ (listed on the series page) — verified 13 Nov 2026"
 latest_paths = ["/latest/", "/"]
 search_path = "/?s={q}"
-episode_path = '^/episode/[^/]+/?$'
-ignore_paths = ["latest", "popular", "az-list", "genre", "episode"]
+episode_path = '^/watch/[^/]+/?$'
+ignore_paths = ["latest", "popular", "az-list", "genre", "episode", "watch"]
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'
 
 [[source]]
 id = "alphahen"
 name = "Alpha-Hen"
-base = "https://alpha-hen.com"
+base = "https://www.alpha-hen.com"
 enabled = true
 adult = true
-note = "18+ — heuristic (not verified yet)"
+note = "18+ — series /<slug>/, episodes /watch/<slug>-th-ตอนที่-NN/ — verified 13 Nov 2026"
 latest_paths = ["/"]
 search_path = "/?s={q}"
+episode_path = '^/watch/[^/]+/?$'
+ignore_paths = ["watch"]
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'
 
 [[source]]
@@ -124,7 +125,9 @@ name = "Anime-H"
 base = "https://anime-h.net"
 enabled = true
 adult = true
-note = "18+ — heuristic (not verified yet)"
+note = "18+ — series /<id>/<slug>, episodes /play/<id>/<slug>-ตอนที่-N-ซับไทย — verified 13 Nov 2026"
 latest_paths = ["/"]
 search_path = "/?s={q}"
+series_path = '^/\d+/[^/]+/?$'
+episode_path = '^/play/[^/]+/'
 title_strip = '\s*(ตอนที่|ซับไทย|พากย์ไทย|EP\.?\s*\d).*$'

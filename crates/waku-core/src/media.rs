@@ -280,6 +280,13 @@ fn walk(http: &Http, url: &str, referer: &str, depth: u8, seen: &mut HashSet<Str
     if depth == 0 || ytdlp_host(url) || !seen.insert(url.split('#').next().unwrap_or(url).to_string()) {
         return None;
     }
+    // streaming.aki.today: `playback/f/<id>/` only builds its iframe with script, the page it points at is `playback/v/<id>/`
+    if let Some((host, id)) = url.split_once("/playback/f/").map(|(h, r)| (h, r.trim_end_matches('/')))
+        && host.ends_with("streaming.aki.today")
+        && !id.is_empty()
+    {
+        return walk(http, &format!("{host}/playback/v/{id}/"), referer, depth, seen, xhr, tr);
+    }
     tr.log(format!("  open {}", truncate(url, 140)));
     if let Some(m) = tonytonychopper(http, url, tr) {
         return Some(m);

@@ -89,6 +89,22 @@ fn text_of(el: ElementRef) -> String {
     clean(&el.text().collect::<String>())
 }
 
+/// Text of a heading without badge chips inside it (alpha-hen: `<h2><span class="al-ez-index-tag">Hentai</span>Title</h2>`).
+fn text_wo_tags(el: ElementRef) -> String {
+    let is_tag = |e: ElementRef| {
+        e.value().attr("class").is_some_and(|c| c.split_whitespace().any(|w| w.contains("-tag") || w == "tag" || w.ends_with("badge")))
+    };
+    let mut s = String::new();
+    for n in el.descendants() {
+        let Some(t) = n.value().as_text() else { continue };
+        let in_tag = n.ancestors().take_while(|a| a.id() != el.id()).filter_map(ElementRef::wrap).any(is_tag);
+        if !in_tag {
+            s.push_str(t);
+        }
+    }
+    clean(&s)
+}
+
 /// Best image URL of an `<img>` (lazy-load attributes first).
 fn img_url(img: ElementRef, page: &str) -> Option<String> {
     let v = img.value();
@@ -168,7 +184,7 @@ fn best_title(card: ElementRef, a: ElementRef) -> String {
         v.into_iter().next()
     };
     let heads: Vec<String> =
-        card.select(&sel_must("h1, h2, h3, h4, h5, .title, .tt, [class*=title], [class*=name]")).map(text_of).collect();
+        card.select(&sel_must("h1, h2, h3, h4, h5, .title, .tt, [class*=title], [class*=name]")).map(text_wo_tags).collect();
     if let Some(t) = longest(heads) {
         return t;
     }
@@ -611,7 +627,12 @@ impl WpSource {
                 continue;
             };
             let full = full.split('#').next().unwrap_or(&full).to_string();
-            let link_text = text_of(el);
+            let mut link_text = text_of(el);
+            if link_text.is_empty() {
+                // thumbnail link (aki-h): the caption is only in `title` / the image alt
+                let alt = el.select(&sel_must("img[alt]")).next().and_then(|i| i.value().attr("alt")).unwrap_or("");
+                link_text = clean(el.value().attr("title").filter(|t| !t.trim().is_empty()).unwrap_or(alt));
+            }
             if full.trim_end_matches('/') == page_clean
                 || !self.is_episode_url(&full, &link_text)
                 || is_range_label(&link_text)
@@ -629,13 +650,10 @@ impl WpSource {
                     continue;
                 };
                 if a.select(&a_sel)
-                    .filter(|x| {
-                        x.value()
-                            .attr("href")
-                            .and_then(|h| abs(page, h))
-                            .is_some_and(|u| self.is_episode_url(&u, ""))
-                    })
-                    .count()
+                    .filter_map(|x| x.value().attr("href").and_then(|h| abs(page, h)))
+                    .filter(|u| self.is_episode_url(u, ""))
+                    .collect::<HashSet<_>>()
+                    .len()
                     > 1
                 {
                     break;
@@ -662,6 +680,14 @@ impl WpSource {
                 url: full,
                 dub,
             });
+        }
+        // aki-h lists "ตอนที่ N ซับไทย" next to "Vol N Sub-Eng": the English-sub copies would clash on numbers
+        let eng = |e: &Episode| {
+            let t = format!("{} {}", e.label, percent_decode(&url_path(&e.url))).to_lowercase().replace('-', " ");
+            t.contains("sub eng")
+        };
+        if eps.iter().any(|e| !eng(e)) && eps.iter().any(eng) {
+            eps.retain(|e| !eng(e));
         }
         // a page linking to other series' episodes (sidebars, "related") must not add those: when most links
         // share a series key (first path segment / slug words), drop the outliers
@@ -798,13 +824,22 @@ impl WpSource {
             );
         }
 
+        // aki-h: `window.displayvideo(0, 40819)` fills an iframe with `<web_uri>video/40819/`
+        if let Ok(re) = Regex::new(r"displayvideo\(\s*\d+\s*,\s*(\d+)\s*\)")
+            && let Some(c) = re.captures(html)
+            && let Some(u) = abs(ep_url, &format!("/video/{}/", &c[1]))
+        {
+            push(&mut out, "Main".into(), ServerKind::Direct(u));
+        }
+
         // <select> / tab buttons whose value is a URL, an <iframe>, or base64 of one
-        for el in doc.select(&sel_must("option[value], [data-src], [data-embed], [data-url], [data-video], [data-iframe], [data-link]")) {
+        // (alpha-hen: `<div class="mp-s-sl" data-id="https://…">Main Player</div>`)
+        for el in doc.select(&sel_must("option[value], [data-src], [data-embed], [data-url], [data-video], [data-iframe], [data-link], .mp-s-sl[data-id]")) {
             let v = el.value();
             if v.name() == "img" || v.name() == "iframe" || v.name() == "script" {
                 continue;
             }
-            for a in ["value", "data-embed", "data-video", "data-iframe", "data-src", "data-url", "data-link"] {
+            for a in ["value", "data-embed", "data-video", "data-iframe", "data-src", "data-url", "data-link", "data-id"] {
                 if let Some(u) = v.attr(a).and_then(|x| url_from_value(x, ep_url)) {
                     if self.embed_candidate(&u, &text_of(el)) {
                         push(&mut out, text_of(el), ServerKind::Direct(u));
@@ -1407,6 +1442,32 @@ mod tests {
             Some("https://anime-waku.com/wp-content/uploads/f.jpg")
         );
         assert!(d.synopsis.starts_with("เรื่องราว"));
+    }
+
+    #[test]
+    fn adult_sites_titles_and_episodes() {
+        // alpha-hen: a category chip sits inside the card heading
+        let s = src("alphahen");
+        let cards = s.extract_cards(
+            r#"<article><a href="https://www.alpha-hen.com/hitori-tsuma/"><img src="https://www.alpha-hen.com/a.jpg" width="200">
+               <h2 class="entry-title ez-card-title"><span class="al-ez-index-tag">Hentai</span>Hitori Tsuma</h2></a></article>"#,
+            "https://www.alpha-hen.com/",
+            false,
+        );
+        assert_eq!(cards[0].title, "Hitori Tsuma");
+        // aki-h: thumbnail link (no text) comes before the caption link; English-sub copies are dropped
+        let s = src("akih");
+        let ep = |id: &str, t: &str| {
+            format!(r#"<div class="ak-ep"><a class="ak-ep__thumb" href="https://aki-h.com/watch/{id}/" title="{t}"><img alt="{t}"></a><h3><a href="https://aki-h.com/watch/{id}/">{t}</a></h3></div>"#)
+        };
+        let html = format!(
+            "<h1>Enjo Kouhai</h1>{}{}{}",
+            ep("aaa", "Enjo Kouhai ตอนที่ 1 ซับไทย"),
+            ep("bbb", "Enjo Kouhai ตอนที่ 2 ซับไทย"),
+            ep("ccc", "Enjo Kouhai Vol 2 Sub-Eng")
+        );
+        let d = s.parse_detail(&html, "https://aki-h.com/enjo-kouhai/");
+        assert_eq!(d.episodes.iter().map(|e| e.num).collect::<Vec<_>>(), vec![1.0, 2.0]);
     }
 
     #[test]
